@@ -654,7 +654,7 @@ class BasePlateElement:
             anchor_resultants, anchor_forces = self.anchor_stiffness_terms(u_local,return_mode=AnchorStiffnessMode.forces)
         else:
             anchor_resultants = 0.0
-            anchor_forces = 0.0
+            anchor_forces = None
 
         # Get bearing Resultants
         cz_states, bearing_resultants, bearing_centroid = self.compute_bearing_resultants_over_theta(u_local)

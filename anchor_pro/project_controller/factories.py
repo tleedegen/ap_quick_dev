@@ -2,17 +2,20 @@ from jedi.plugins.django import mapping
 
 from anchor_pro.elements.wall_bracket import BracketReleases
 from anchor_pro.model import WallOffsets
+from anchor_pro.project_controller.errors import MissingInputError
 from anchor_pro.project_controller.excel_importer import ExcelTablesImporter
 from anchor_pro.ap_types import (
-    SeriesOrDict, WallPositions, WallNormalVecs
+    SeriesOrDict, SupportingPlanes, SupportingPlaneNormal
 )
 import anchor_pro.model as m
 import anchor_pro.elements.base_plates as bp
 import anchor_pro.elements.fastener_connection as cxn
 import anchor_pro.elements.sms as sms
+import anchor_pro.elements.wood_fasteners as wood
 import anchor_pro.elements.concrete_anchors as conc
 import anchor_pro.elements.wall_bracket as wbkt
 import anchor_pro.elements.wall_backing as wbing
+from anchor_pro.project_controller.errors import *
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,7 +38,6 @@ def model_factory(equipment_data: dict, excel_tables:ExcelTablesImporter) ->Tupl
     # 1) Extract Inputs
     project_info = excel_tables.project_info
     df_fasteners = excel_tables.df_fasteners
-    df_sms = excel_tables.df_sms
 
     # 2) Create Properties Objects
     # Create Model Info
@@ -80,50 +82,64 @@ def model_factory(equipment_data: dict, excel_tables:ExcelTablesImporter) ->Tupl
     # 3) Create Elements Lists with Factory Functions
     # Base Plate Elements, Connections, Anchors
     base_geometry_json = equipment_data['Pattern Definition_base']
-    if not isinstance(base_geometry_json, str):
-        raise KeyError(f"{equipment_info.equipment_id} base geometry {equipment_data['base_geometry']} not found.")
+    if isinstance(base_geometry_json,str):
+        # raise KeyError(f"{equipment_info.equipment_id} base geometry {equipment_data['base_geometry']} not found.")
 
-    E_base = None
-    poisson = None
+        E_base = None
+        poisson = None
+        if not equipment_data['base_mat_id']:
+            raise ValueError("Missing input for 'Base material ID'")
+        if install.base_material == m.BaseMaterial.concrete:
+            E_base = equipment_data['Ec_base']
+            poisson = equipment_data['poisson_base']
+        elif install.base_material == m.BaseMaterial.wood:
+            E_base = equipment_data['E_wood_base']
+            poisson = E_base / (2 * equipment_data[
+                'G_wood']) - 1  # todo: this is wrong. G wood is specific gravity, not shear modulus
+        else:
+            raise Exception(f'Specified base material {install.base_material} not supported.')
 
-    if install.base_material == m.BaseMaterial.concrete:
-        E_base = equipment_data['Ec_base']
-        poisson = equipment_data['poisson_base']
-    elif install.base_material == m.BaseMaterial.wood:
-        E_base = equipment_data['E_wood_base']
-        poisson = E_base / (2 * equipment_data[
-            'G_wood']) - 1  # todo: this is wrong. G wood is specific gravity, not shear modulus
+        (base_plates,
+         bp_connections,
+         sms_fasteners,
+         bp_to_cxn,
+         cxn_to_sms) = base_elements_factory(base_geometry_json, eprops, E_base, poisson, df_fasteners)
+
+        base_anchors = base_anchors_factory(
+            install, base_plates, eprops, equipment_data
+        )
+
     else:
-        raise Exception(f'Specified base material {install.base_material} not supported.')
-
-    (base_plates,
-     bp_connections,
-     sms_fasteners,
-     bp_to_cxn,
-     cxn_to_sms) = base_elements_factory(base_geometry_json, eprops, E_base, poisson, df_fasteners, df_sms)
-
-    base_anchors = base_anchors_factory(
-        install, base_plates, eprops, equipment_data
-    )
+        base_plates = []
+        bp_connections = []
+        sms_fasteners = []
+        bp_to_cxn = []
+        cxn_to_sms = []
+        base_anchors = []
 
     # Wall Brackets, Connections, CXN SMS, Backing, Wall Anchors
     wall_geometry_json = equipment_data['Pattern Definition_wall']
     wall_height = equipment_data['wall_height']
     E_wall = equipment_data['E_wall']
     I_wall = equipment_data['I_wall']
-    if not isinstance(wall_geometry_json, str):
-        raise KeyError(f'{equipment_info.equipment_id} wall geometry {equipment_data["wall_geometry"]} not found.')
-    (wall_brackets,
-        wall_backing,
-        bracket_connections,
-        bracket_sms,
-        bracket_to_backing, backing_to_brackets,
-        wall_offsets,
-        omit_bracket_output) = wall_elements_factory(wall_geometry_json, eprops, wall_height, E_wall,I_wall,df_fasteners)
+    if isinstance(wall_geometry_json, str):
+        # raise KeyError(f'{equipment_info.equipment_id} wall geometry {equipment_data["wall_geometry"]} not found.')
+        (wall_brackets,
+            wall_backing,
+            bracket_connections,
+            bracket_sms,
+            bracket_to_backing, backing_to_brackets,
+            wall_offsets,
+            omit_bracket_output) = wall_elements_factory(wall_geometry_json, eprops, wall_height, E_wall,I_wall,df_fasteners)
 
-    wall_anchors, backing_to_anchors, anchors_to_backing = wall_anchors_factory(
-        install, wall_backing, eprops, equipment_data
-    )
+        wall_anchors, backing_to_anchors, anchors_to_backing = wall_anchors_factory(
+            install, wall_backing, eprops, equipment_data
+        )
+    else:
+        wall_brackets = wall_backing = bracket_connections = bracket_sms = bracket_to_backing = backing_to_brackets =\
+            wall_anchors = backing_to_anchors = anchors_to_backing = []
+        wall_offsets = None
+        omit_bracket_output = True
 
     # Create Elements Dataframe Object
     elements = m.Elements(
@@ -160,8 +176,7 @@ def base_elements_factory(
     eprops: m.EquipmentProps,
     E_base: float,
     poisson: float,
-    df_fasteners: pd.DataFrame,
-    df_sms: pd.DataFrame,   # currently unused; keep for symmetry or remove
+    df_fasteners: pd.DataFrame
     ) -> Tuple:
     """
     Creates base-plate elements from the user-input JSON pattern.
@@ -390,7 +405,7 @@ def _sms_connection_factory(
     )
     connection = cxn.FastenerConnection(bolt_group_props=bg_props)
 
-    # SMS props (fallbacks)
+    # SMS props (with defaults)
     gauge = int(eprops.gauge) if eprops.gauge is not None else 18
     fy = float(eprops.fy) if eprops.fy is not None else 33.0
     sms_props = sms.SMSProps(
@@ -417,10 +432,10 @@ def base_anchors_factory(
             cx_neg = equipment_data['cx_neg_base']
             cy_neg = equipment_data['cy_pos_base']
             cy_pos = equipment_data['cy_neg_base']
-            cx_pos = np.inf if np.isnan(cx_pos) or (cx_pos is None) else cx_pos
-            cx_neg = np.inf if np.isnan(cx_neg) or (cx_neg is None) else cx_neg
-            cy_pos = np.inf if np.isnan(cy_pos) or (cy_pos is None) else cy_pos
-            cy_neg = np.inf if np.isnan(cy_neg) or (cy_neg is None) else cy_neg
+            cx_pos = np.inf if (cx_pos is None) or np.isnan(cx_pos) else cx_pos
+            cx_neg = np.inf if (cx_neg is None) or np.isnan(cx_neg) else cx_neg
+            cy_pos = np.inf if (cy_pos is None) or np.isnan(cy_pos) else cy_pos
+            cy_neg = np.inf if (cy_neg is None) or np.isnan(cy_neg) else cy_neg
             geo_props = conc.GeoProps(
                 xy_anchors=xy_anchors,
                 Bx=eprops.Bx,
@@ -562,34 +577,38 @@ def _wall_brackets_factory(
 
         # Wall Normal Vector
         supporting_wall = bracket.supporting_wall
-        normal_vec = np.asarray(WallNormalVecs[WallPositions(supporting_wall).name].value)
+        normal_vec = np.asarray(SupportingPlaneNormal[SupportingPlanes(supporting_wall).name].value)
         backing_depth = bracket.D
         # Calculate Bracket Centerline Point And Connection Offset Point
 
         plate_x_offset = bracket.plate_x_offset
         z_offset = bracket.plate_y_offset
-
+        xyz_edge = xyz_equipment
         if supporting_wall == 'X+':
             wall_gap = 0 if not wall_offsets.XP else wall_offsets.XP
             x_offset = 0
             y_offset = -plate_x_offset
+            xyz_edge[0] = eprops.Bx/2
         elif supporting_wall == 'X-':
             wall_gap = 0 if not wall_offsets.XN else wall_offsets.XN
             x_offset = 0
             y_offset = plate_x_offset
+            xyz_edge[0] = -eprops.Bx/2
         elif supporting_wall == 'Y+':
             wall_gap = 0 if not wall_offsets.YP else wall_offsets.YP
             x_offset = plate_x_offset
             y_offset = 0
+            xyz_edge[1] = eprops.By/2
         elif supporting_wall == 'Y-':
             wall_gap = 0 if not wall_offsets.YN else wall_offsets.YN
             x_offset = -plate_x_offset
             y_offset = 0
+            xyz_edge[1] = -eprops.By/2
         else:
             raise Exception('Supporting Wall Incorrectly Defined')
 
-        xyz_wall = xyz_equipment - wall_gap * normal_vec
-        xyz_backing = xyz_equipment + np.array((x_offset, y_offset, z_offset))
+        xyz_wall = xyz_edge - wall_gap * normal_vec
+        xyz_backing = xyz_wall + np.array((x_offset, y_offset, z_offset))
 
         releases = BracketReleases(
             NP=bracket.NP,
@@ -604,7 +623,7 @@ def _wall_brackets_factory(
             xyz_equipment=xyz_equipment,
             xyz_wall=xyz_wall,
             xyz_backing=xyz_backing,
-            supporting_wall=WallPositions(supporting_wall),
+            supporting_wall=SupportingPlanes(supporting_wall),
             normal_unit_vector=normal_vec,
             E=E, I=I, L=L,
             releases=releases)
@@ -687,7 +706,7 @@ def _wall_backing_factory(
         # pz_cent = np.mean(pz_brackets, axis=0)
         # xy_brackets_local = pz_brackets - pz_cent
         centroid_in_global_coordinates = np.mean(np.array([bracket.geo_props.xyz_backing for bracket in brackets]), axis=0)
-        local_z = np.asarray(WallNormalVecs[WallPositions(supporting_wall).name].value)
+        local_z = np.asarray(SupportingPlaneNormal[SupportingPlanes(supporting_wall).name].value)
         local_y = (0, 0, 1)
         local_x = np.cross(local_y, local_z)
 
@@ -727,6 +746,7 @@ def wall_anchors_factory(
 
 
     if install.wall_material == m.WallMaterial.concrete:
+        # Create one wall_anchors object for each wall
         walls_with_anchors = set([backing.props.supporting_wall for backing in wall_backing_list])
         supporting_wall_idx = {}
         # Create a single anchors object for each wall to which anchors are attached
@@ -759,7 +779,76 @@ def wall_anchors_factory(
 
         backing_to_anchors = [supporting_wall_idx[backing.props.supporting_wall] for backing in wall_backing_list]
 
-    #todo: Wall SMS and Wood Screws
+    elif install.wall_material == m.WallMaterial.cfs:
+
+        # Create one wall anchors object for each backing element
+        gauge = int(equipment_data['stud_gauge']) if equipment_data['stud_gauge'] is not None else 18
+        fy = float(equipment_data['stud_fy']) if equipment_data['stud_fy'] is not None else 33.0
+        n_gyp = int(equipment_data['num_gyp'])
+        gyp_to_condition = {1: sms.SMSCondition.GYP_1_LAYER,
+                            2: sms.SMSCondition.GYP_2_LAYERS}
+
+        for idx, backing in enumerate(wall_backing_list):
+            # SMS props (with defaults)
+            if (backing.props.backing_type == wbing.BackingType.STRUT
+                    and (backing.bolt_group_props.h >= backing.bolt_group_props.w)):
+                condition_x = sms.SMSCondition.PRYING
+            else:
+                condition_x = gyp_to_condition[n_gyp]
+
+            if (backing.props.backing_type == wbing.BackingType.STRUT
+                    and (backing.bolt_group_props.w >= backing.bolt_group_props.h)):
+                condition_y = sms.SMSCondition.PRYING
+            else:
+                condition_y = gyp_to_condition[n_gyp]
+
+            sms_props = sms.SMSProps(
+                fy=fy, gauge=gauge,
+                condition_x=condition_x,
+                condition_y=condition_y,
+            )
+
+            wall_anchors.append(sms.SMSAnchors(props=sms_props))
+            backing_to_anchors.append(idx)
+
+    elif install.wall_material == m.WallMaterial.wood:
+        for idx, backing in enumerate(wall_backing_list):
+            member_props = wood.MainMemberProps(
+                wood_id = equipment_data['wood_id_wall'],
+                G = equipment_data['G_wood_wall'],
+                E = equipment_data['E_wood_wall'],
+                moisture = equipment_data['moisture_condition_wood_wall'],
+                wood_class = equipment_data['hardwood_softwood_wall'],
+                Bm = equipment_data['Bm_wall'],
+                Dm = equipment_data['Dm_wall'],
+                grain_dir = equipment_data['grain_direction_wall']
+            )
+            if not backing.props.t_steel:
+                t_steel = 0.0359
+                warnings.warn('Fastener Pattern plate thickness not specified. Using 0.0359 in. (20-Ga)')
+            else:
+                t_steel = backing.props.t_steel
+            if not backing.props.fy:
+                Fes = 42000
+                warnings.warn('Fastener Pattern plate grade not specified. Using 42 ksi.')
+            else:
+                Fes = backing.props.fy*1000
+
+            side_member_props = wood.SideMemberProps(
+                t_steel = t_steel,
+                Fes = Fes,
+                g = 0.5*equipment_data['num_gyp']
+            )
+
+            wall_anchors.append(wood.WoodFastener(
+                member_props=member_props,
+                side_member_props=side_member_props,
+                xy_anchors=backing.bolt_group_props.xy_anchors
+            ))
+            backing_to_anchors.append(idx)
+
+    else:
+        raise NotImplementedError(f'{install.wall_material} Wall Material Not Yet Supported.')
 
     anchors_to_backing = []
     for anchor_idx in range(len(wall_anchors)):
@@ -901,13 +990,14 @@ def mechanical_anchor_props_factory(
         cost_rank= _get(anchor_data, 'cost_rank')
     )
 
-    fya = float(_get(anchor_data, "fya"))
-    fua = float(_get(anchor_data, "fua"))
-    Nsa = float(_get(anchor_data, "Nsa"))
-    le = float(_get(anchor_data, "le"))
+    fya = float(_get(anchor_data, "fya") or 0.0)
+    fua = float(_get(anchor_data, "fua")or 0.0)
+    Nsa = float(_get(anchor_data, "Nsa")or 0.0)
+    hef_default = float(_get(anchor_data, "hef_default"))
+    le = float(_get(anchor_data, "le") or hef_default)
     da = float(_get(anchor_data, "da"))
     esr = str(_get(anchor_data, "esr"))
-    hef_default = float(_get(anchor_data, "hef_default"))
+
     Kv = float(_get(anchor_data, "Kv"))
     # Optional
     abrg_val = _get(anchor_data, "abrg", None)
@@ -959,6 +1049,17 @@ def anchor_phi_factors_factory(anchor_data: SeriesOrDict) -> conc.Phi:
         eqN=_get(anchor_data, 'phi_eqN'),
         seismic=0.7,
         aN=_get(anchor_data, 'phi_aN', None)  # Optional, default to None if missing
+    )
+
+def wood_fastener_props_factory(fastener_data) -> wood.WoodFastenerProps:
+    return wood.WoodFastenerProps(
+        fastener_id = fastener_data['fastener_id'],
+        fastener_type = fastener_data['fastener_type'],
+        D_nom=fastener_data['D_nom'],
+        D=fastener_data['D'],
+        Fyb=fastener_data['Fyb'],
+        length=fastener_data['length'],
+        cost_rank=fastener_data['cost_rank']
     )
 
 def wall_bracket_props_factory(bracket_id: str, bracket_data, wall_flexibility:float)->wbkt.BracketProps:

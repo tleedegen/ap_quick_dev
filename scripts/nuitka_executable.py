@@ -21,7 +21,7 @@ nuitka_command = [
     '--windows-icon-from-ico=' + icon_path,  # Set the icon for the executable
     '--plugin-enable=pyqt5',
     '--output-filename=AnchorPro - 250130.exe',  # Set output file name
-    '../anchor_pro/main.py'                # Path to the main script, adjusting for "scripts" subfolder
+    '../anchor_pro/main_old.py'                # Path to the main script, adjusting for "scripts" subfolder
 ]
 
 # Additional hidden imports for packages used in your project

@@ -1,6 +1,7 @@
 import xlwings as xw
 import pandas as pd
 from anchor_pro.elements.sms import SMSCatalog
+from typing import Optional
 
 class ExcelTablesImporter:
     NA_VALUES = ['NA', 'N/A', '-', 'None', ""]
@@ -24,18 +25,19 @@ class ExcelTablesImporter:
                 print(f"Skipping {name.name} due to error: {e}")
 
         # Import Excel Tables
-        self.df_equipment = None
+        self.df_equipment: Optional[pd.DataFrame] = None
         self.df_base_geometry = None
         self.df_wall_geometry = None
-        self.df_fasteners = None
+        self.df_fasteners:Optional[pd.DataFrame] = None
         self.df_concrete = None
-        self.df_walls = None
+        self.df_walls: Optional[pd.DataFrame] = None
         self.df_anchors = None
         self.df_brackets_catalog = None
         self.bracket_group_list = None
-        self.df_sms = None
-        self.df_product_groups = None
+        self.df_sms:Optional[pd.DataFrame] = None
+        self.df_conc_product_groups = None
         self.df_wood = None
+        self.df_wood_fasteners = None
 
 
         # Table References (sheet name, table NW cell name, instance attribute name)
@@ -50,7 +52,7 @@ class ExcelTablesImporter:
                             ('Wood Fasteners', 'tbl_wood_fasteners', 'df_wood_fasteners'),
                             ('SMS', 'tblSMS', 'df_sms'),
                             ('Brackets', 'tblBracketCatalog', 'df_brackets_catalog'),
-                            ('Anchor Product Groups', 'tblProductGroups', 'df_product_groups')]
+                            ('Anchor Product Groups', 'tblProductGroups', 'df_conc_product_groups')]
 
         for (sheet_name, tbl_name, df_name) in table_references:
             sheet = wb.sheets[sheet_name]
@@ -72,5 +74,5 @@ class ExcelTablesImporter:
         # Import Bracket Product Group Names
         self.bracket_group_list = wb.names['bracket_groups_list'].refers_to_range.value
 
-        #Create Special SMS Catalog Opbject
+        #Create Special SMS Catalog Object
         self.sms_catalog = SMSCatalog(self.df_sms)

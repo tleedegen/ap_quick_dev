@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from enum import Enum
 
 import anchor_pro.ap_types
-from anchor_pro.ap_types import WallPositions
+from anchor_pro.ap_types import SupportingPlanes
 from anchor_pro.utilities import get_anchor_spacing_matrix
 
 '''ENUMERATION DEFINITIONS'''
@@ -124,7 +124,7 @@ class GeoProps:
     shear_groups_map: List[List[int]] = None
     tension_groups: List[TensionGroup] = None
     shear_groups: List[ShearGroup] = None
-    supporting_wall: Optional[WallPositions] = None
+    supporting_wall: Optional[SupportingPlanes] = None
     def __post_init__(self):
         # Number of Anchors
         n_anchor = self.xy_anchors.shape[0]
@@ -461,7 +461,7 @@ class ConcreteAnchorResults:
 
     tension_unity_by_anchor: NDArray #(n_anchor, n_theta)
     shear_unity_by_anchor: NDArray #(n_anchor, n_theta)
-    unity_by_anchor: NDArray  #(n_anchor, n_theta)
+    unities: NDArray  #(n_anchor, n_theta)  Unity by anchor
 
     unity: float
     ok: bool
@@ -473,7 +473,7 @@ class ConcreteAnchorResults:
     governing_tension_group: int
     governing_shear_group: int
 
-    forces: NDArray #(n_anchor, 3, n_theta)
+    forces: NDArray #(n_anchor, [fx, fy, fz] , n_theta)
     K: float
     cost_rank: float
 
@@ -1217,7 +1217,7 @@ class ConcreteAnchors:
             shear_pryout_calcs = shear_pryout_calcs,
             tension_unity_by_anchor = tension_unity,
             shear_unity_by_anchor = shear_unity,
-            unity_by_anchor = unities,
+            unities= unities,
             unity = float(unity),
             ok = unity<1.0,
             governing_tension = forces[max_anchor,0,max_theta],

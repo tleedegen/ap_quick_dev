@@ -22,7 +22,7 @@ import anchor_pro.elements.concrete_anchors as conc
 import anchor_pro.elements.wood_fasteners as wf
 import anchor_pro.elements.sms as sms
 import anchor_pro.elements.fastener_connection as cxn
-from anchor_pro.ap_types import (FactorMethod, WallPositions)
+from anchor_pro.ap_types import (FactorMethod, SupportingPlanes)
 
 import anchor_pro.elements.base_plates
 
@@ -47,7 +47,7 @@ class WallMaterial(str, Enum):
     concrete = "Concrete"
     cmu = "CMU"
     wood = "Wood Stud"
-    cfs = "MetalStud"
+    cfs = "Metal Stud"
 
 @dataclass(frozen=True,slots=True)
 class EquipmentInfo:
@@ -444,7 +444,7 @@ class EquipmentModel:
         self,
         base_anchor_props:List[conc.MechanicalAnchorProps],
         base_plate_stiffness: List[bp.AnchorStiffness],
-        wall_anchor_props: List[conc.MechanicalAnchorProps],
+        wall_anchor_props: Union[List[wf.WoodFastenerProps],List[conc.MechanicalAnchorProps], sms.SMS_SIZE],
         wall_bracket_props: List[wbkt.BracketProps],
         cxn_sms_size, sms_catalog):
 
@@ -466,11 +466,18 @@ class EquipmentModel:
                 el.set_screw_size(sms_catalog, cxn_sms_size)
 
         # Wall Anchors
-        for el, props in zip(els.wall_anchors, wall_anchor_props):
-            el.set_anchor_props(props)
-            #todo: el.check_anchor_spacing()
-            # if not all(self.elements.base_anchors.spacing_requirements.values()):
-            #     self._analysis_vars.omit_analysis = True
+        if self.install.wall_material == WallMaterial.concrete.value:
+            for el, props in zip(els.wall_anchors, wall_anchor_props):
+                el.set_anchor_props(props)
+                #todo: el.check_anchor_spacing()
+                # if not all(self.elements.base_anchors.spacing_requirements.values()):
+                #     self._analysis_vars.omit_analysis = True
+        elif self.install.wall_material == WallMaterial.cfs.value:
+            for el in els.wall_anchors:
+                el.set_screw_size(sms_catalog,wall_anchor_props)
+        elif self.install.wall_material == WallMaterial.wood.value:
+            for el, props in zip(els.wall_anchors, wall_anchor_props):
+                el.set_fastener_props(props)
 
         # Wall Brackets
         for el, props in zip(els.wall_brackets, wall_bracket_props):
@@ -602,23 +609,22 @@ class EquipmentModel:
         elif ed == Codes.cbc98:
             # CBC 1998, 16B
             # LRFD Combinations
+            Fh = 0.75 * 1.7 * 1.1 * fp.Eh
             Fuv_min = -0.9 * Wp + 1.3 * 1.1 * fp.Ev # 9B-3
             Fuv_max = -0.75 * (1.4 * Wp + 1.7 * 1.1 * fp.Ev) # 9B-2
-            if self.install.installation_type in [InstallType.base, InstallType.brace]:
-                Fuv = Fuv_min
-            else:
-                Fuv = Fuv_max
-            # LRFD horizontal
-            lrfd = FactoredLoadCase(FactorMethod.lrfd, Fh=0.75 * 1.7 * 1.1 * fp.Eh,
-                                    Fv_min=Fuv_min, Fv_max=Fuv_max, Fv=Fuv)
-            # CBC 98 doesn't natively define an "omega-level" pathway; for symmetry, mirror LRFD:
-            lrfd_omega = FactoredLoadCase(FactorMethod.lrfd_omega, Fh=0.75 * 1.7 * 1.1 * fp.Eh,
-                                          Fv_min=Fuv_min, Fv_max=Fuv_max, Fv=Fuv)
-            # ASD horizontal per your code (Fav vertical was commented in original — mirror LRFD verticals for completeness)
-            Fav_min = -0.9*Wp + 1.0*fp.Ev
-            Fav_max = -1.0*Wp +1.0*fp.Ev
+            Fuv = Fuv_min if self.install.installation_type in [InstallType.base, InstallType.brace] else Fuv_max
+            lrfd = FactoredLoadCase(FactorMethod.lrfd, Fh=Fh, Fv_min=Fuv_min, Fv_max=Fuv_max, Fv=Fuv)
 
-            asd = FactoredLoadCase(FactorMethod.asd, Fh=fp.Eh, Fv_min=Fuv_min, Fv_max=Fuv_max, Fv=Fuv)  #todo: QA vertical loads at ASD level for 98 CBC
+            # LRFD Omega
+            # CBC 98 doesn't natively define an "omega-level" pathway; for symmetry, mirror LRFD:
+            lrfd_omega = FactoredLoadCase(FactorMethod.lrfd_omega, Fh=Fh,  Fv_min=Fuv_min, Fv_max=Fuv_max, Fv=Fuv)
+
+            # ASD Combinations (UBC 97
+            Fah = 1.0*fp.Eh
+            Fav_min = -0.9*Wp + 1.0*fp.Ev
+            Fav_max = -1.0*Wp - 1.0*fp.Ev
+            Fav = Fav_min if self.install.installation_type in [InstallType.base, InstallType.brace] else Fav_max
+            asd = FactoredLoadCase(FactorMethod.asd, Fh=Fah, Fv_min=Fav_min, Fv_max=Fav_max, Fv=Fav)
 
             return FactoredLoads(asd=asd, lrfd=lrfd, lrfd_omega=lrfd_omega)
 
@@ -700,9 +706,8 @@ class EquipmentModel:
         elems = self.elements
         k = np.zeros((n_dof, n_dof))
         # Base Plates
-        #TODO: Huristically, it was determined that these stiffness terms needed to be negated.
-        # Dig into why the signs for base plate stiffess terms needed to be reversed
-        k += -sum(element.get_element_stiffness_matrix(u) for element in elems.base_plates)
+
+        k += sum(element.get_element_stiffness_matrix(u) for element in elems.base_plates)
         #todo: base straps
         # k += sum(element.get_element_stiffness_matrix(u) for element in self.base_straps)
 
@@ -801,6 +806,7 @@ class EquipmentModel:
 
                 if not success and verbose:
                     print(f'Theta {np.degrees(t):.0f} UNCONVERGED with interpolated u guess {j}')
+                    equilibrium_solutions[:,idx] = 0
             if not new_converge_found:
                 break
 
@@ -1071,7 +1077,7 @@ class EquipmentModel:
         # Penalty on zero-force dofs
         zero_force_mask = np.isclose(p, 0, 1e-10)
         load_vector_weights[zero_force_mask] *= penalty_factor
-        residual = load_vector_weights * (-np.dot(self.analysis_vars.K, u) - p) + penalty_vector
+        residual = load_vector_weights * (np.dot(self.analysis_vars.K, u) - p) + penalty_vector
         if verbose:
             print(f'Norm: {np.linalg.norm(residual):.3e}, Update K: {update_K}, Penalties: {penalty_vector}')
         return residual
@@ -1093,15 +1099,15 @@ class EquipmentModel:
 
             # Base Plates (Downstream elements, evaluate for all methods)
             bp_results = [plate.evaluate(dof_sol) for plate in self.elements.base_plates]
-            if self.elements.base_plates[0].factor_method == factor_method:
+            if self.elements.base_plates and self.elements.base_plates[0].factor_method == factor_method:
                 base_plate_results = bp_results.copy()
 
             # Base Anchors (No downstream elements, only evaluate for applicable method)
             for anch_idx, anchors in enumerate(self.elements.base_anchors):
-                if self.elements.base_anchors[0].factor_method == factor_method:
+                if anchors.factor_method == factor_method:
                     bp_indices = self.elements.anchors_to_bp[anch_idx]
                     # Pull anchor forces from all contributing baseplates
-                    anchor_forces = np.concatenate([bp_results[bp_idx].anchor_forces for bp_idx in bp_indices],axis=0)
+                    anchor_forces = np.concatenate([bp_results[bp_idx].anchor_forces for bp_idx in bp_indices if not bp_results[bp_idx].anchor_forces is None],axis=0)
                     base_anchor_results.append(anchors.evaluate(anchor_forces))
 
             # Base Connections (Only Evaluate on sms-required method)
@@ -1118,7 +1124,7 @@ class EquipmentModel:
 
             # Brackets (Downstream elements, evaluate for all methods, return results for applicable method)
             bracket_results = [bracket.evaluate(dof_sol,factor_method) for bracket in self.elements.wall_brackets]
-            if self.elements.wall_brackets[0].factor_method == factor_method:
+            if bracket_results and self.elements.wall_brackets[0].factor_method == factor_method:
                 wall_bracket_results = bracket_results.copy()
 
             # Wall Backing and Anchors

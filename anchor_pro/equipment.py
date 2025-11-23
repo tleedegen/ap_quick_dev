@@ -15,7 +15,7 @@ from functools import partial
 
 from anchor_pro.utilities import Utilities
 from anchor_pro.concrete_anchors import ConcreteCMU, ConcreteAnchors, CMUAnchors
-from anchor_pro.elements.wood_fasteners import WoodFastener
+from anchor_pro.elements.wood_fasteners import WoodFastener_OLD
 
 
 def root_solver_worker(queue, residual_func, u_init, p, root_kwargs):
@@ -266,7 +266,7 @@ class EquipmentModel:
                     poisson = equipment_data['poisson_base']
                 elif self.base_material == 'Wood':
                     E_base = equipment_data['E_wood_base']
-                    poisson = E_base/(2*equipment_data['G_wood']) - 1
+                    poisson = E_base/(2*equipment_data['G_wood_base']) - 1
                 else:
                     raise Exception(f'Specified base material {self.base_material} not supported.')
 
@@ -286,7 +286,7 @@ class EquipmentModel:
                         self.base_anchors = ConcreteAnchors(equipment_data, xy_anchors, base_or_wall='base')
                     elif self.base_material == 'Wood':
                         self.include_overstrength = False
-                        self.base_anchors = WoodFastener(xy_anchors) # todo: [WOOD] Finish this
+                        self.base_anchors = WoodFastener_OLD(xy_anchors) # todo: [WOOD] Finish this
                         self.base_anchors.set_member_properties_from_data_table(equipment_data,base_or_wall='base')
                         t_steel = 0.0478  # todo [WOOD, base plate thickness] for now, this is hard-coded. Need to add input for thickness of base material.
                         Fse = 33
@@ -682,7 +682,7 @@ class EquipmentModel:
         elif wall_type == 'Wood Stud':
             g = 0.5 * equipment_data['num_gyp']
             for backing in self.wall_backing:
-                backing.anchors_obj = WoodFastener(backing.pz_anchors)
+                backing.anchors_obj = WoodFastener_OLD(backing.pz_anchors)
                 backing.anchors_obj.set_member_properties_from_data_table(equipment_data, base_or_wall='wall')
                 t_steel = backing.t_steel  #todo: pick up here
                 Fes = backing.fy*1000
@@ -943,7 +943,7 @@ class EquipmentModel:
                 if isinstance(wall_anchors, SMSAnchors) and wall_anchor_data is not None:
                     wall_anchors.reset_results()
                     wall_anchors.set_screw_size(wall_anchor_data)
-                if isinstance(wall_anchors, WoodFastener) and wall_anchor_data is not None:
+                if isinstance(wall_anchors, WoodFastener_OLD) and wall_anchor_data is not None:
                     wall_anchors.set_fastener_properties(wall_anchor_data)
 
         # Set Hardware Attachment Screw Size
@@ -971,7 +971,7 @@ class EquipmentModel:
                 if isinstance(self.base_anchors,ConcreteAnchors):
                     self.base_anchors.get_governing_anchor_group()
                     self.base_anchors.check_anchor_capacities()
-                elif isinstance(self.base_anchors,WoodFastener):
+                elif isinstance(self.base_anchors,WoodFastener_OLD):
                     self.base_anchors.check_fasteners()
 
             # Base Plate Connection Checks
@@ -1007,7 +1007,7 @@ class EquipmentModel:
                 elif isinstance(wall_anchors, ConcreteAnchors):
                     wall_anchors.get_governing_anchor_group()
                     wall_anchors.check_anchor_capacities()
-                elif isinstance(wall_anchors, WoodFastener):
+                elif isinstance(wall_anchors, WoodFastener_OLD):
                     wall_anchors.check_fasteners()
                 elif wall_anchors is None:
                     pass

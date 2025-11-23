@@ -12,6 +12,8 @@ from anchor_pro.anchor_pattern_mixin import AnchorPatternMixin
 from dataclasses import dataclass
 from typing import Optional, Literal, Union, Dict, Tuple
 from enum import Enum
+
+from anchor_pro.ap_types import FactorMethod
 from anchor_pro.utilities import get_anchor_spacing_matrix
 
 
@@ -59,7 +61,7 @@ class SideMemberProps:
     t_steel: float
     Fes: float
     g: float = 0.0  # gap between members
-    Es: float = 29000.0  # ksi; override if needed
+    Es: float = 29000000.0  # psi; override if needed
 
 @dataclass(frozen=True, slots=True)
 class WoodFastenerProps:
@@ -69,53 +71,71 @@ class WoodFastenerProps:
     D: float  # shank/root diameter used for calcs
     Fyb: float  # bending yield stress
     length: float
+    cost_rank: float
 
-@dataclass(slots=True)
-class WoodFastenerIntermediates:
-    # Helpful for debugging/QA
-    theta_rel: NDArray[np.floating]      # [n_theta], radians relative to grain
-    theta_deg: NDArray[np.floating]      # [n_theta], 0..90
-    Fem: NDArray[np.floating]            # [n_theta]
-    K_theta: NDArray[np.floating]        # [n_theta]
-    K_D: float
-    Rd: NDArray[np.floating]             # [n_theta, 6] reduction terms
-    yield_modes: Dict[str, NDArray[np.floating]]  # mode -> [n_theta]
-
-@dataclass(slots=True)
-class WoodFastenerCapacities:
-    # Per-theta capacities/modifiers
-    Z: NDArray[np.floating]             # [n_theta]
-    Z_prime: NDArray[np.floating]       # [n_theta]
-    W: float
-    W_prime: float
-    p: float
-    z_alpha_prime: NDArray[np.floating] # [n_theta, n_anchor]
 
 @dataclass(frozen=True, slots=True)
 class WoodFastenerResults:
-    forces: NDArray
-    capacities: WoodFastenerCapacities
-    unity: NDArray
-    ok: NDArray
-    intermediates: Dict[str, Union[NDArray,float]]
+    # Demands
+    F: NDArray  # Resultant force
+    N: NDArray  # Tension Component
+    Vx: NDArray  # Shear X Component
+    Vy: NDArray  # Shear Y Component
+    V: NDArray  # Combined Shear Component
+
+    # Capacity Calcs
+    theta_rel: NDArray[np.floating]  # [n_theta], radians relative to grain
+    theta_deg: NDArray[np.floating]  # [n_theta], 0..90
+    Fem: NDArray[np.floating]  # [n_theta]
+    K_theta: NDArray[np.floating]  # [n_theta]
+    K_D: float
+    Rd: NDArray[np.floating]  # [n_theta, 6] reduction terms
+    yield_modes: Dict[str, NDArray[np.floating]]  # mode -> [n_theta]
+    C_M: float
+    C_t: float
+    C_g: float
+    C_delta: float
+    C_di: float
+    C_tn: float
+    C_eg: float
+    Kf: float
+    phi: float
+
+    Z: NDArray[np.floating]  # [n_theta]
+    Z_prime: NDArray[np.floating]  # [n_theta]
+    W: float
+    W_prime: float
+    p: float
+    z_alpha_prime: NDArray[np.floating]  # [n_theta, n_anchor]
+
+
+    # Results
+    unities: NDArray
+    unity: float
+    ok: bool
+    governing_theta_idx: int
+    governing_fastener_idx: int
+    cost_rank: float
 
 class WoodFastener:
-    __slots__ = ("elem_id", "member_props", "side_member_props",
-                 "fastener_props", "xy_anchors", "max_temp")
+    __slots__ = ("member_props", "side_member_props",
+                 "fastener_props", "xy_anchors", "max_temp","factor_method")
 
     def __init__(self,
-                 elem_id: str,
                  member_props: Optional[MainMemberProps],
                  side_member_props: Optional[SideMemberProps],
-                 fastener_props: Optional[WoodFastenerProps],
                  xy_anchors: NDArray[np.floating],
+                 fastener_props: Optional[WoodFastenerProps]=None,
                  max_temp: float = 100.0):
-        self.elem_id = elem_id
         self.member_props = member_props
         self.side_member_props = side_member_props
         self.fastener_props = fastener_props
         self.xy_anchors = np.asarray(xy_anchors)
         self.max_temp = float(max_temp)
+        self.factor_method = FactorMethod.lrfd
+
+    def set_fastener_props(self,fastener_pros:WoodFastenerProps):
+        self.fastener_props = fastener_pros
 
     def _reference_withdrawal(self) -> float:
         fp = self.fastener_props
@@ -137,25 +157,25 @@ class WoodFastener:
             return 10.0 * D + 0.5
         return np.nan  # handled by Rd branch for D >= 0.25
 
-    def _Rd_row(self, K_theta: float, K_D: float) -> NDArray[np.floating]:
+    def _get_Rd(self, K_theta: NDArray, K_D: float) -> NDArray[np.floating]:
         """Return Rd[0..5] for one theta (Table 12.3.1B + note)."""
         fp = self.fastener_props
         D = fp.D
         D_nom = fp.D_nom
         if (D_nom > 0.25) and (D < 0.25):  # footnote 1
             base = K_D * K_theta
-            return np.array([base, base, base, base, base, base], dtype=float)
+            return np.stack([base, base, base, base, base, base])
         if D < 0.25:
-            base = K_D
-            return np.array([base, base, base, base, base, base], dtype=float)
+            base = np.full_like(K_theta,K_D)
+            return np.stack([base, base, base, base, base, base])
         if 0.25 <= D <= 1.0:
-            return np.array([4.0 * K_theta, 4.0 * K_theta,
+            return np.stack([4.0 * K_theta, 4.0 * K_theta,
                              3.6 * K_theta, 3.2 * K_theta,
-                             3.2 * K_theta, 3.2 * K_theta], dtype=float)
+                             3.2 * K_theta, 3.2 * K_theta])
         # D > 1.0 not permitted
         raise ValueError('Fastener diameter greater than 1" not permitted.')
 
-    def _Fem(self, theta_rel: float) -> float:
+    def _get_Fem(self, theta_rel: NDArray) -> NDArray:
         """Equivalent wood bearing per NDS 12.3.4 / Table 12.3.3."""
         mp, fp = self.member_props, self.fastener_props
         G = mp.G
@@ -167,7 +187,7 @@ class WoodFastener:
         s2, c2 = np.sin(theta_rel) ** 2, np.cos(theta_rel) ** 2
         return (Fe_parallel * Fe_perp) / (Fe_parallel * s2 + Fe_perp * c2)
 
-    def _K_theta(self, theta_deg: float) -> float:
+    def _get_K_theta(self, theta_deg: NDArray) -> NDArray:
         # Table 12.3.1B: linear interpolation: 0°→1.0, 90°→1.25
         return 1.0 + 0.25 * (theta_deg / 90.0)
 
@@ -177,8 +197,15 @@ class WoodFastener:
         if (D < 0.25) or (n <= 1):
             return 1.0
         spacing = get_anchor_spacing_matrix(self.xy_anchors)
-        s = np.where(spacing == 0.0, np.inf, spacing).min()
         mp, sp = self.member_props, self.side_member_props
+        s = np.where(spacing == 0.0, np.inf, spacing).min()
+        if s > mp.Bm:
+            return 1.0
+            #todo: [WOOD] consider directionality of spacing for group factor
+            '''Note, this is nto correct. This returns one if the absolute spacing between all anchors
+            is greater than the main member width. but you could have two anchors along the length of the main member.
+            Need to refine this to consider directionality of spacing relative to grain direction.'''
+
         As = mp.Bm * sp.t_steel
         Am = mp.area
         E, Es = mp.E, sp.Es
@@ -193,8 +220,8 @@ class WoodFastener:
         Cg = (m * (1 - m ** (2 * n)) / denom) * (1 + Rea) / (1 - m)
         return float(Cg)
 
-    def _yield_Z_for_theta(self, Fem: float, K_theta: float, Rd_row: NDArray[np.floating]) -> Tuple[
-        float, Dict[str, float]]:
+    def _yield_Z_for_theta(self, Fem: NDArray, Rd: NDArray[np.floating]) -> Tuple[
+        NDArray, Dict[str, NDArray]]:
         """Compute Z(θ) via yield modes (NDS 12.3.1 & TR12 Table 1)."""
         fp, sp = self.fastener_props, self.side_member_props
         D = fp.D
@@ -212,23 +239,23 @@ class WoodFastener:
         # modes that use a quadratic (A, B, C) / Rd
         modes_ABC = {
             "II": (1 / (4 * qs) + 1 / (4 * qm), ls / 2 + g + lm / 2, qs * (ls ** 2) / 4 - qm * (lm ** 2) / 4,
-                   Rd_row[2]),
-            "IIIm": (1 / (2 * qs) + 1 / (4 * qm), g + lm / 2, -Ms - qm * (lm ** 2) / 4, Rd_row[3]),
-            "IIIs": (1 / (4 * qs) + 1 / (2 * qm), ls / 2 + g, -qs * (ls ** 2) / 4 - Mm, Rd_row[4]),
-            "IV": (1 / (2 * qs) + 1 / (2 * qm), g, -Ms - Mm, Rd_row[5]),
+                   Rd[2,:]),
+            "IIIm": (1 / (2 * qs) + 1 / (4 * qm), g + lm / 2, -Ms - qm * (lm ** 2) / 4, Rd[3,:]),
+            "IIIs": (1 / (4 * qs) + 1 / (2 * qm), ls / 2 + g, -qs * (ls ** 2) / 4 - Mm, Rd[4,:]),
+            "IV": (1 / (2 * qs) + 1 / (2 * qm), g, -Ms - Mm, Rd[5,:]),
         }
 
-        yields: Dict[str, float] = {}
         # Single-curvature modes
-        yields["Im"] = D * lm * Fem / Rd_row[0]
-        yields["Is"] = D * ls * Fes / Rd_row[1]
+        yields: Dict[str, NDArray] = {"Im": D * lm * Fem / Rd[0, :], "Is": D * ls * Fes / Rd[1, :]}
+
         # Quadratic modes
         for k, (A, B, C, Rd_val) in modes_ABC.items():
-            disc = max(B * B - 4 * A * C, 0.0)
+            disc = np.clip(B * B - 4 * A * C, 0.0,None)
             cap = (-B + np.sqrt(disc)) / (2 * A * Rd_val)
             yields[k] = cap
 
-        Z = min(yields.values())
+        Z = np.min(np.stack(list(yields.values())), axis=0)
+
         return Z, yields
 
     def evaluate(self,
@@ -236,7 +263,7 @@ class WoodFastener:
         """
         Parameters
         ----------
-        forces : [n_theta, n_anchor, 3 or 6] -> [N, Vx, Vy, ...]
+        forces: [n_anchor, 3, n_theta] as [T, Vx, Vy]
 
         Returns
         -------
@@ -283,7 +310,7 @@ class WoodFastener:
         C_tn = 1.0
 
         # Geometry Factor 12.5.2
-        C_delta = 1.0  # assuming away from edges per your comment
+        C_delta = 1.0  # assuming away from edges
 
         # Other Factors
         Kf = 3.32
@@ -305,40 +332,29 @@ class WoodFastener:
         K_D = self._K_D()
 
         # K_theta from table 12.3.1B
-        K_theta_vec = np.array([self._K_theta(td) for td in theta_deg], dtype=float)
+        K_theta_vec = self._get_K_theta(theta_deg)
 
-        Rd = np.zeros((n_theta, 6), dtype=float)
-        Fem = np.zeros(n_theta, dtype=float)
-        Z = np.zeros(n_theta, dtype=float)
-        # store yield mode caps per-theta for debugging
-        ymods = {name: np.zeros(n_theta, dtype=float) for name in ("Im", "Is", "II", "IIIm", "IIIs", "IV")}
+        Rd = self._get_Rd(K_theta_vec, K_D)
+        Fem = self._get_Fem(theta_rel)
 
-        for i in range(n_theta):
-            Fem_i = self._Fem(theta_rel[i])
-            Fem[i] = Fem_i
-            # Reduction term Rd from Table 12.3.1B
-            Rd_i = self._Rd_row(K_theta_vec[i], K_D)
-            Rd[i, :] = Rd_i
-            Zi, y_i = self._yield_Z_for_theta(Fem_i, K_theta_vec[i], Rd_i)
-            Z[i] = Zi
-            for k in ymods:
-                ymods[k][i] = y_i[k]
-
+        Z, yield_modes = self._yield_Z_for_theta(Fem, Rd)
         # Z' per-theta
+
         Z_prime = Z * C_M * C_t * C_g * C_delta * C_eg * C_di * C_tn * Kf * phi * time_factor
 
         # --- demands grid ---
         V = np.sqrt(Vx * Vx + Vy * Vy)
         N_pos = np.clip(N, 0.0,None)
-        total = np.sqrt(V * V + N_pos * N_pos)
+        F = np.sqrt(V * V + N_pos * N_pos)
 
         # orientation weights
         with np.errstate(divide="ignore", invalid="ignore"):
-            cos_alpha = np.where(total > 0.0, V / total, 1.0)
-            sin_alpha = np.where(total > 0.0, N_pos / total, 0.0)
+            cos_alpha = np.where(F > 0.0, V / F, 1.0)
+            sin_alpha = np.where(F > 0.0, N_pos / F, 0.0)
 
-        # broadcast Z'(theta) over anchors
-        Zp = Z_prime.reshape(n_theta, 1)
+        # broadcast Z^prime (theta) over anchors
+        # Zp = Z_prime.reshape(n_theta, 1)
+        Zp = Z_prime
         Wp = float(W_prime)
         denom = (Wp * p) * (cos_alpha ** 2) + Zp * (sin_alpha ** 2)
         # avoid division by zero (when both components 0)
@@ -348,44 +364,32 @@ class WoodFastener:
 
         ''' Unity '''
         with np.errstate(divide="ignore", invalid="ignore"):
-            unity = np.where(z_alpha_prime > 0.0, V / z_alpha_prime, 0.0)
+            unities = np.where(z_alpha_prime > 0.0, V / z_alpha_prime, 0.0)
+        governing_fastener_idx, governing_theta_idx = np.unravel_index(np.argmax(unities, axis=None), unities.shape)
+        unity = unities.max()
+        ok = unity <= 1
 
-        ok = unity <= 0
-
-        # --- governing case ---
-        gov_flat = np.argmax(DCR)
-        gi, gj = np.unravel_index(gov_flat, DCR.shape)
-        governing = WoodFastenerGoverning(
-            theta_idx=int(gi),
-            anchor_idx=int(gj),
-            DCR=float(DCR[gi, gj]),
-            N=float(N[gi, gj]),
-            Vx=float(Vx[gi, gj]),
-            Vy=float(Vy[gi, gj]),
-            Z_prime=float(Z_prime[gi]),
-            W_prime=float(W_prime),
-            z_alpha_prime=float(z_alpha_prime[gi, gj]),
-        )
-
-        # previous report helper
-        Tu_max = float(np.sqrt(N*N + Vx*Vx + Vy*Vy).max())
-
-        # --- package results ---
-        demands = WoodFastenerDemands(N_tension=N_pos, V_shear=V, total=total)
-        capacities = WoodFastenerCapacities(Z=Z, Z_prime=Z_prime, W=W, W_prime=W_prime, p=p,
-                                            z_alpha_prime=z_alpha_prime)
-        intermediates = WoodFastenerIntermediates(theta_rel=theta_rel, theta_deg=theta_deg,
-                                                  Fem=Fem, K_theta=K_theta_vec, K_D=float(K_D),
-                                                  Rd=Rd, yield_modes=ymods)
-
-        return WoodFastenerResults(demands=demands,
-                                   capacities=capacities,
-                                   intermediates=intermediates,
-                                   DCR=DCR,
-                                   governing=governing,
-                                   Tu_max=Tu_max)
-
-
+        return WoodFastenerResults(N=N_pos, Vx=Vx, Vy=Vy, V=V, F=F,
+                                   Z=Z, Z_prime=Z_prime, W=W, W_prime=W_prime, p=p,
+                                   z_alpha_prime=z_alpha_prime,
+                                   theta_rel=theta_rel, theta_deg=theta_deg,
+                                   Fem=Fem, K_theta=K_theta_vec, K_D=float(K_D),
+                                   Rd=Rd, yield_modes=yield_modes,
+                                   C_M= C_M,
+                                   C_t= C_t,
+                                   C_g= C_g,
+                                   C_delta= C_delta,
+                                   C_di= C_di,
+                                   C_tn= C_tn,
+                                   C_eg= C_eg,
+                                   Kf= Kf,
+                                   phi= phi,
+                                   unities=unities,
+                                   unity = unity,
+                                   governing_theta_idx=int(governing_theta_idx),
+                                   governing_fastener_idx=int(governing_fastener_idx),
+                                   ok=ok,
+                                   cost_rank=self.fastener_props.cost_rank)
 
 class WoodFastener_OLD(AnchorPatternMixin):
     EDGE_DIST_REQS = pd.DataFrame({
@@ -482,7 +486,7 @@ class WoodFastener_OLD(AnchorPatternMixin):
         self.Dm = member_data['Dm'+'_'+base_or_wall]
 
         # Computed Properties
-        self.grain_angle = WoodFastener.GRAIN_ANGLE[member_data['grain_direction'+'_'+base_or_wall]]
+        self.grain_angle = WoodFastener_OLD.GRAIN_ANGLE[member_data['grain_direction'+'_'+base_or_wall]]
         self.Am = self.Bm * self.Dm
 
 

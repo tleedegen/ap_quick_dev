@@ -1,0 +1,6 @@
+streamlit>=1.45.1    # UI framework 
+pandas>=2.3.0           # DataFrame engine with Parquet support
+pyarrow>=20.0.0         # Fast Parquet read/write backend used by pandas
+openpyxl >= 3.1.5   #Used by pandas for excel to parquet conversion
+plotly
+Authlib >= 1.3.2

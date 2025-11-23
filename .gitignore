@@ -1,5 +1,3 @@
-.idea/
-Reference Files/
 #Python Virtual Enviornment
 .venv/
 
@@ -14,3 +12,5 @@ __pycache__/
 #DLL files
 *$py.class
 .streamlit/secrets.toml
+.idea/
+Reference Files/
