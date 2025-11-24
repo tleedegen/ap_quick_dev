@@ -58,10 +58,8 @@ class ElasticBoltGroupProps:
 
     # Inertial properties
     inert_props_cent: Optional[InertialProps] = None # Inertial properties w.r.t. bolt group centroid
-    inert_props_xp: Optional[InertialProps] = None  # (w.r.t. y-edge for positive moment about x-x axis)
-    inert_props_yp: Optional[InertialProps] = None  # (w.r.t. x-edge for positive moment about y-y axis)
-    inert_props_xn: Optional[InertialProps] = None  # (w.r.t. y-edge for negative moment about x-x axis)
-    inert_props_yn: Optional[InertialProps] = None  # (w.r.t. x-edge for negative moment about y-y axis)
+    inert_props_x: Optional[InertialProps] = None  # (w.r.t. least y-edge for moment about x-x axis)
+    inert_props_y: Optional[InertialProps] = None  # (w.r.t. least x-edge for moment about y-y axis)
 
     def __post_init__(self):
         #Number of anchors
@@ -94,29 +92,16 @@ class ElasticBoltGroupProps:
         R = np.vstack([lx, ly, lz])
         object.__setattr__(self, "global_to_local_transformation",R)
 
-        # Centroidal Inertial Properties
         ic = compute_inertial_props(self.xy_anchors,self.anchor_centroid)
         object.__setattr__(self,'inert_props_cent',ic)
 
-        # Inertial Props for bending about positive X
-        y_edge = -self.h / 2.0
+        y_edge = (self.h / 2.0) if (cent[1] >= 0.0) else (-self.h / 2.0)
         ix = compute_inertial_props(self.xy_anchors,np.array([self.anchor_centroid[0],y_edge]))
-        object.__setattr__(self,'inert_props_xp',ix)
+        object.__setattr__(self,'inert_props_x',ix)
 
-        # Inertial Props for bending about negative X
-        y_edge = self.h / 2.0
-        ix = compute_inertial_props(self.xy_anchors, np.array([self.anchor_centroid[0], y_edge]))
-        object.__setattr__(self, 'inert_props_xn', ix)
-
-        # Inertial Props for bending about positive Y
-        x_edge = self.w / 2.0
+        x_edge = (self.w / 2.0) if (cent[0] >= 0.0) else (-self.w / 2.0)
         iy = compute_inertial_props(self.xy_anchors, np.array([x_edge, self.anchor_centroid[1]]))
-        object.__setattr__(self, 'inert_props_yp', iy)
-
-        # Inertial Props for bending about negative Y
-        x_edge = -self.w / 2.0
-        iy = compute_inertial_props(self.xy_anchors, np.array([x_edge, self.anchor_centroid[1]]))
-        object.__setattr__(self, 'inert_props_yn', iy)
+        object.__setattr__(self, 'inert_props_y', iy)
 
 @dataclass(frozen=True, slots=True)
 class ElasticBoltGroupResults:
@@ -138,10 +123,8 @@ def calculate_bolt_group_forces(
     T:  NDArray[np.float64],   # Applied resultants at bolt-group reference
     n_anchors: int,
     inert_c: InertialProps,                   # centroid-origin inertials (must expose Ixx,Iyy,Ixy,Ip, dx,dy)
-    inert_xp: Optional[InertialProps] = None,  # inertials for +Mx term (same interface)
-    inert_xn: Optional[InertialProps] = None,  # inertials for -Mx term (same interface)
-    inert_yp: Optional[InertialProps] = None,  # inertials for +My term (same interface)
-    inert_yn: Optional[InertialProps] = None,  # inertials for -My term (same interface)
+    inert_x: Optional[InertialProps] = None,  # inertials for Mx term (same interface)
+    inert_y: Optional[InertialProps] = None,  # inertials for My term (same interface)
     eps: float = 1e-12,
 ) -> NDArray[np.float64]:
     """
@@ -171,10 +154,8 @@ def calculate_bolt_group_forces(
     T_b  = T[None, :]
 
     # Select inertial packs
-    ixp = inert_xp if inert_xp is not None else inert_c
-    iyp = inert_yp if inert_yp is not None else inert_c
-    ixn = inert_xn if inert_xn is not None else inert_c
-    iyn = inert_yn if inert_yn is not None else inert_c
+    ix = inert_x if inert_x is not None else inert_c
+    iy = inert_y if inert_y is not None else inert_c
     ic = inert_c
 
     # Pull dx, dy as (n_a, 1)
@@ -187,10 +168,8 @@ def calculate_bolt_group_forces(
         return a
 
     dx_c, dy_c = _col(ic.dx), _col(ic.dy)
-    dx_xp, dy_xp = _col(ixp.dx), _col(ixp.dy)
-    dx_xn, dy_xn = _col(ixn.dx), _col(ixn.dy)
-    dx_yp, dy_yp = _col(iyp.dx), _col(iyp.dy)
-    dx_yn, dy_yn = _col(iyn.dx), _col(iyn.dy)
+    dx_x, dy_x = _col(ix.dx), _col(ix.dy)
+    dx_y, dy_y = _col(iy.dx), _col(iy.dy)
 
     # -----------------------
     # Normal term: equal share
@@ -200,52 +179,39 @@ def calculate_bolt_group_forces(
     # -----------------------
     # Mx bending term
     # -----------------------
+    Ixx_x, Iyy_x, Ixy_x = float(ix.Ixx), float(ix.Iyy), float(ix.Ixy)
+    denom_x = Ixx_x * Iyy_x - Ixy_x**2
 
-    sign_mask = (Mx_b >= 0)
-    Ixx = np.where(sign_mask, ixp.Ixx, ixn.Ixx).astype(float)  # (n_t,)
-    Iyy = np.where(sign_mask, ixp.Iyy, ixn.Iyy).astype(float)  # (n_t,)
-    Ixy = np.where(sign_mask, ixp.Ixy, ixn.Ixy).astype(float)  # (n_t,)
-    denom = Ixx * Iyy - Ixy ** 2  # (n_t,)
-    dx = np.where(sign_mask, dx_xp, dx_xn)
-    dy = np.where(sign_mask, dy_xp, dy_xn)
-
-
-    if (abs(Ixy) <= eps).all():
+    if abs(Ixy_x) <= eps:
         # Decoupled case -> y * (Mx / Ixx)
-        if (abs(Ixx) > eps).all():
-            mx_term = dy * (Mx_b / Ixx)     # (n_a, n_t)
+        if abs(Ixx_x) > eps:
+            mx_term = dy_x @ (Mx_b / Ixx_x)     # (n_a, n_t)
         else:
             mx_term = np.zeros((n_a, n_t))
     else:
-        if (abs(denom) > eps).all():
+        if abs(denom_x) > eps:
             # Coupled case -> (Mx/denom)*(Iyy*dy - Ixy*dx)
-            mx_term = (Mx_b / denom) * (Iyy * dy - Ixy * dx)
+            mx_term = (Mx_b / denom_x) * (Iyy_x * dy_x - Ixy_x * dx_x)
         else:
             mx_term = np.zeros((n_a, n_t))
 
     # -----------------------
     # My bending term
     # -----------------------
-    sign_mask = (Mx_b >= 0)
-    Ixx = np.where(sign_mask, iyp.Ixx, iyn.Ixx).astype(float)  # (n_t,)
-    Iyy = np.where(sign_mask, iyp.Iyy, iyn.Iyy).astype(float)  # (n_t,)
-    Ixy = np.where(sign_mask, iyp.Ixy, iyn.Ixy).astype(float)  # (n_t,)
-    denom = Ixx * Iyy - Ixy ** 2  # (n_t,)
-    dx = np.where(sign_mask, dx_yp, dx_yn)
-    dy = np.where(sign_mask, dy_yp, dy_yn)
+    Ixx_y, Iyy_y, Ixy_y = float(iy.Ixx), float(iy.Iyy), float(iy.Ixy)
+    denom_y = Ixx_y * Iyy_y - Ixy_y**2
 
-
-    if (abs(Ixy) <= eps).any():
+    if abs(Ixy_y) <= eps:
         # Decoupled case -> (+) x * (My / Iyy)
         # (Sign preserved to match your current convention.)
-        if (abs(Iyy) > eps).any():
-            my_term = dx * (My_b / Iyy)     # (n_a, n_t)
+        if abs(Iyy_y) > eps:
+            my_term = dx_y @ (My_b / Iyy_y)     # (n_a, n_t)
         else:
             my_term = np.zeros((n_a, n_t))
     else:
-        if (abs(denom) > eps).any():
+        if abs(denom_y) > eps:
             # Coupled case -> (My/denom)*(Ixx*dx - Ixy*dy)
-            my_term = (My_b / denom) * (Ixx * dx - Ixy * dy)
+            my_term = (My_b / denom_y) * (Ixx_y * dx_y - Ixy_y * dy_y)
         else:
             my_term = np.zeros((n_a, n_t))
 

@@ -16,12 +16,12 @@ conda_env_path = r'C:\Users\djmiller\Miniforge3\envs\env_ap'
 graphics_path = '..\\graphics'
 
 # PyInstaller.__main__.run([
-#     '..\\anchor_pro\\main_old.py',  # Path to the main Python script you want to convert
+#     '..\\anchor_pro\\main.py',  # Path to the main Python script you want to convert
 #     '--onefile',  # Create a one-file bundled executable
 #     # '--windowed',  # Use this option for GUI applications (remove it for console applications)
 #     '--hidden-import=openpyxl.cell._writer',
 #     '--hidden-import=matplotlib.backends.backend_pdf',
-#     # '--exclude-module=traitsui main_old.py',
+#     # '--exclude-module=traitsui main.py',
 #     '--icon=..\\graphics\\DegPyramid.ico',
 #     f'--add-data={graphics_path};graphics',
 #     '--name=AnchorPro - v2.2.13'
@@ -29,7 +29,7 @@ graphics_path = '..\\graphics'
 # ])
 
 # PyInstaller.__main__.run([
-#     '..\\anchor_pro\\main_old.py',
+#     '..\\anchor_pro\\main.py',
 
 #     # Create a single-file executable (you can switch to --onedir for debugging)
 #     '--onefile',

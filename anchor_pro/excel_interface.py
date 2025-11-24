@@ -60,7 +60,7 @@ class ExcelTablesImporter:
         self.df_anchors = None
         self.df_brackets_catalog = None
         self.bracket_group_list = None
-        self.df_conc_product_groups = None
+        self.df_product_groups = None
         self.df_wood = None
 
         # Table References (sheet name, table NW cell name, instance attribute name)
@@ -465,7 +465,7 @@ class ProjectController:
                                                        [(self.excel_tables.project_info, equipment_data,
                                                          self.excel_tables.df_anchors,
                                                          self.excel_tables.df_wood_fasteners,
-                                                         self.excel_tables.df_conc_product_groups,
+                                                         self.excel_tables.df_product_groups,
                                                          self.excel_tables.df_brackets_catalog,
                                                          self.excel_tables.bracket_group_list,
                                                          self.excel_tables.df_fasteners,
@@ -488,7 +488,7 @@ class ProjectController:
                 model, results = self.create_model_and_analyze_item(self.excel_tables.project_info, equipment_data,
                                                                     self.excel_tables.df_anchors,
                                                                     self.excel_tables.df_wood_fasteners,
-                                                                    self.excel_tables.df_conc_product_groups,
+                                                                    self.excel_tables.df_product_groups,
                                                                     self.excel_tables.df_brackets_catalog,
                                                                     self.excel_tables.bracket_group_list,
                                                                     self.excel_tables.df_fasteners,
@@ -846,7 +846,7 @@ class ProjectController:
 
             # Create dictionary whose keys are governing items, and values are their corresponding group
             for group, eq_list in self.group_dict.items():
-                print (f'Getting governing item for {group}')
+
                 if group == 'ungrouped':
                     for id in eq_list:
                         self.governing_items[id] = (None, 0)

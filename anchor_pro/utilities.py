@@ -264,27 +264,14 @@ def get_anchor_spacing_matrix(xy_anchors: np.ndarray) -> np.ndarray:
     spacing_matrix = np.linalg.norm(diffs, axis=-1)  # (n, n)
     return spacing_matrix
 
-def get_governing_result(results_list: Optional[List[RESULTS_LIKE]],field_name: str = "unity") -> Optional[Tuple[RESULTS_LIKE, int]]:
+def get_governing_result(results_list: Optional[List[RESULTS_LIKE]]) -> Optional[Tuple[RESULTS_LIKE, int]]:
     """
     Return the governing result (object with the highest unity value)
     from a list of result-like objects. Returns None if the list is empty.
     """
-
     if not results_list:
         return None
-
-    def key_func(kv):
-        value = getattr(kv[1], field_name)
-        if isinstance(value, np.ndarray):
-            if value.size == 0:
-                return float("-inf")  # handle empty arrays safely
-            return np.nanmax(value)  # handles NaNs gracefully
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float("-inf")  # ignore invalid comparison fields
-
-    idx, governing = max(enumerate(results_list), key=key_func)
+    idx, governing = max(enumerate(results_list), key=lambda kv: kv[1].unity)
     return governing, idx
 
 def compute_backing_xy_points(s_or_num_horiz, s_or_num_vert, L_horiz, L_vert, x_offset, y_offset,

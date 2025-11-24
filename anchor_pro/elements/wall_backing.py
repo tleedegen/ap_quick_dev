@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
-from anchor_pro.ap_types import SupportingPlanes, FactorMethod
+from anchor_pro.ap_types import WallPositions, FactorMethod
 from anchor_pro.elements.elastic_bolt_group import ElasticBoltGroupProps, ElasticBoltGroupResults, calculate_bolt_group_forces
 
 class BackingType(str, Enum):
@@ -13,9 +13,9 @@ class BackingType(str, Enum):
 @dataclass(frozen=True, slots=True)
 class WallBackingProps:
     # Backing hardware properties
-    d: float                               # backing depth
-    backing_type: BackingType
-    supporting_wall: SupportingPlanes
+    d: float                               # backing depth (e.g., to wall or standoff)
+    backing_type: BackingType              # "Flat", "Angle", etc.
+    supporting_wall: WallPositions
 
     pz_brackets: NDArray # (n_brkt, 2) [p,z] of bracket attachment points on the backing
     xyz_brackets: NDArray  # (n_brkt,3)
@@ -77,9 +77,10 @@ class WallBackingElement:
         F_sum_loc = R @ F_sum_glob                             # (3, n_t)
         M_sum_loc = R @ M_sum_glob                             # (3, n_t)
 
-        # Arrange into (6, n_t) [N, Vp, Vz, Mx, My, T]
-        # Map local axes: local axes are [x=p, y=z, z=normal]
-        Vp, Vz, N = F_sum_loc[0, :], F_sum_loc[1, :], F_sum_loc[2, :]
+        # Arrange into (6, n_t) in your preferred order
+        # Example order: [N, Vp, Vz, Mx, My, T]
+        # Map local axes: assume local axes are [x=normal, y=p, z=z] or as per your standard.
+        N, Vp, Vz = F_sum_loc[0, :], F_sum_loc[1, :], F_sum_loc[2, :]
         Mx, My, T  = M_sum_loc[0, :], M_sum_loc[1, :], M_sum_loc[2, :]
         centroid_forces_loc = np.vstack([N, Vp, Vz, Mx, My, T])  # (6, n_t)
 
@@ -87,8 +88,8 @@ class WallBackingElement:
         anchor_forces = calculate_bolt_group_forces(N, Vp, Vz, Mx, My, T,
                                                     bg.n_anchors,
                                                     bg.inert_props_cent,
-                                                    bg.inert_props_xp,
-                                                    bg.inert_props_yp)
+                                                    bg.inert_props_x,
+                                                    bg.inert_props_y)
 
         return ElasticBoltGroupResults(
             centroid_forces_loc=centroid_forces_loc,

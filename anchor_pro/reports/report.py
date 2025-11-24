@@ -13,9 +13,8 @@ from typing import Union, List, Any, Tuple
 import anchor_pro.model as m
 import anchor_pro.elements.concrete_anchors as conc
 import anchor_pro.elements.sms as sms
-import anchor_pro.elements.wood_fasteners as wf
 from anchor_pro.elements.sms import SMSCondition
-from anchor_pro.model import WallMaterial, InstallType
+from anchor_pro.model import WallMaterial
 from anchor_pro.project_controller.project_classes import ModelRecord
 from anchor_pro.utilities import get_governing_result
 
@@ -27,7 +26,6 @@ import numpy as np
 
 import pandas as pd
 import os
-import warnings
 
 # import anchor_pro.calculator
 # from io import BytesIO
@@ -453,8 +451,8 @@ class EquipmentReport(Report):
         # self.governing_items = governing_items
         # self.group_dict = group_dict
         self.item_sections_dict = self.get_item_sections_dict()
-        if self.pool is not None:
-            print('Creating figures (parallel processing)')
+        if project_info['use_parallel_processing']:
+            print('Creating figures with multi-threading')
             self.plots_dict = self.generate_plots(self.pool)
         else:
             print('Creating figures')
@@ -521,11 +519,19 @@ class EquipmentReport(Report):
 
         if plot_func := EquipmentReportSections.SECTION_PLOTS.get(func_name, {}).get(fig_name):
             if plot_func in plots.VTK_PLOTS:
-                fig, width = plot_func(report_section.model_record, *sec_pars['args'])
+                fig, width = plot_func(report_section.item, *sec_pars['args'], filename=filename)
+                # plot_time = time.time() - start_time
+                # print(f"{filename} PLOTTED in {plot_time:.4f} seconds")
                 file = plots.vtk_save(fig, filename=filename)
+                # save_time = time.time() - start_time - plot_time
+                # print(f"{filename} SAVED in {save_time:.4f} seconds")
             else:
-                fig, width = plot_func(report_section.model_record, *sec_pars['args'])
+                fig, width = plot_func(report_section.item, *sec_pars['args'])
+                # plot_time = time.time() - start_time
+                # print(f"{filename} PLOTTED in {plot_time:.4f} seconds")
                 file = plots.plt_save(filename=filename)
+                # save_time = time.time() - start_time - plot_time
+                # print(f"{filename} SAVED in {save_time:.4f} seconds")
 
         # elapsed_time = time.time() - start_time
         # print(f"Worker {os.getpid()} processed {filename} in {elapsed_time:.4f} seconds")
@@ -542,7 +548,7 @@ class EquipmentReport(Report):
             for fig_name in EquipmentReportSections.SECTION_PLOTS.get(sec_pars['section_function'].__name__, {}).keys()
         ]
 
-        results = pool.imap_unordered(self.plots_worker_task, plot_args)
+        results = pool.map(self.plots_worker_task, plot_args)
 
         plots_dict = {filename: data for filename, data in results if data is not None}
 
@@ -644,6 +650,7 @@ class EquipmentReportSections(ReportSections):
         self.group_name = group_name
         self.group_items = group_items
         self.group_idx = group_idx
+        self.governing_backing = None
         self.wall_anchors = None
 
         self.sections_dict = self.initialize_sections_dictionary()
@@ -743,18 +750,11 @@ class EquipmentReportSections(ReportSections):
         run = self.model_record.analysis_runs[self.model_record.governing_run]
 
         # Front and End Matter
-        if self.model_record.frontmatter_file and not os.path.exists(self.model_record.frontmatter_file):
-            warnings.warn(f'Frontmatter file {self.model_record.frontmatter_file} not found.')
-        else:
-            sd['Introduction']['include'] = bool(self.model_record.frontmatter_file)
-
-        if self.model_record.endmatter_file and not os.path.exists(self.model_record.endmatter_file):
-            warnings.warn(f'Frontmatter file {self.model_record.endmatter_file} not found.')
-        else:
-            sd['Addendum']['include'] = bool(self.model_record.endmatter_file)
+        # sd['Introduction']['include'] = bool(item.frontmatter_file)
+        # sd['Addendum']['include'] = bool(item.endmatter_file)
 
         # Group Summary
-        sd['Group Summary']['include'] = self.model_record.group_record is not None
+        # sd['Group Summary']['include'] = self.group_items is not None
 
         # Basic Report Elements
         sd['Unit Summary']['include'] = True
@@ -767,17 +767,18 @@ class EquipmentReportSections(ReportSections):
             # Load Sections
             sd['Equipment Loads']['include'] = True
 
-            sd['Seismic Load $F_p$ (ASCE 7-16)']['include'] = code == 'ASCE 7-16'
-            sd['Maximum Assumed Seismic Load $F_p$']['include'] = code == 'ASCE 7-22 OPM'
+            # sd['Seismic Load $F_p$ (ASCE 7-16)']['include'] = code == 'ASCE 7-16'
+            # sd['Maximum Assumed Seismic Load $F_p$']['include'] = code == 'ASCE 7-22 OPM'
             sd['Seismic Load $F_p$ (CBC 1998)']['include'] = code == 'CBC 1998, 16B'
 
             if FactorMethod.lrfd in model.analysis_vars.factor_methods:
-                sd['LRFD Factored Loads']['include'] = code in ['ASCE 7-16', 'ASCE 7-22 OPM']
+                # sd['LRFD Factored Loads']['include'] = code in ['ASCE 7-16', 'ASCE 7-22 OPM']
                 sd['LRFD Factored Loads (CBC 1998)']['include'] = code == 'CBC 1998, 16B'
 
             if FactorMethod.asd in model.analysis_vars.factor_methods:
                 sd['ASD Factored Loads (CBC 1998)']['include'] = code == 'CBC 1998, 16B'
-                sd['ASD Factored Loads']['include'] = code in ['ASCE 7-16', 'ASCE 7-22 OPM']
+                # sd['ASD Factored Loads']['include'] = False
+
 
             # Base Anchor Demands
             sd['Base Anchor Demands']['include'] = bool(model.elements.base_anchors)
@@ -824,13 +825,15 @@ class EquipmentReportSections(ReportSections):
         # sd['Base Straps']['include'] = len(item.base_straps) > 0 and not self.item.omit_analysis
         #
         # # Wall Brackets and Wall Anchors
-        has_brackets = model.install.installation_type in [m.InstallType.brace, m.InstallType.wall]
-        if has_brackets and not run.omit_analysis:
-            sd['Wall Fastener Demand']['include'] = True
-            sd['Wall Brackets']['include'] = \
-                sd['Wall Bracket Demand']['include'] = \
-                sd['Wall Bracket Checks']['include'] = not self.model_record.omit_bracket_output
-
+        # has_brackets = item.installation_type in ['Wall Brackets', 'Wall Mounted']
+        # if has_brackets and not self.item.omit_analysis:
+        #     sd['Wall Fastener Demand']['include'] = True
+        #     sd['Wall Brackets']['include'] = \
+        #         sd['Wall Bracket Demand']['include'] = \
+        #         sd['Wall Bracket Checks']['include'] = not self.item.omit_bracket_output
+        #     # sd['Wall Anchors']['include'] = \
+        #     self.governing_backing = max(item.wall_backing, key=lambda obj: obj.anchor_forces[:, 0].max())
+        #
         # Wall Concrete Anchors
         has_wall_concrete_anchors = bool(model.elements.wall_anchors) \
                                     and (model.install.wall_material == m.WallMaterial.concrete)
@@ -860,18 +863,21 @@ class EquipmentReportSections(ReportSections):
         # if has_wall_cmu_anchors and not self.item.omit_analysis:
         #     sd['Wall CMU Anchor Checks']['include'] = True
         #
-        # Wall SMS Anchors
-        has_wall_sms_anchors = bool(model.elements.wall_anchors) \
-                                    and (model.install.wall_material == m.WallMaterial.cfs)
-        if has_wall_sms_anchors and not model.analysis_vars.omit_analysis:
-            sd['Wall SMS Checks']['include'] = True
-
-        # Wall Wood Fasteners
-        has_wall_wood_fasteners = any([isinstance(anchors_obj, wf.WoodFastener)
-                                    for anchors_obj in model.elements.wall_anchors])
-        if has_wall_wood_fasteners and not model.analysis_vars.omit_analysis:
-            sd['Wall Fastener Checks']['include'] = True
-
+        # # Wall SMS Anchors
+        # has_wall_sms_anchors = any([isinstance(b.anchors_obj, SMSAnchors)
+        #                             for b in item.wall_backing])
+        # if has_wall_sms_anchors and not self.item.omit_analysis:
+        #     self.wall_anchors = self.governing_backing.anchors_obj
+        #     sd['Wall SMS Checks']['include'] = True
+        #
+        # # Wall Wood Fasteners
+        # has_wall_wood_fasteners = any([isinstance(b.anchors_obj, WoodFastener)
+        #                             for b in item.wall_backing])
+        # if has_wall_wood_fasteners and not self.item.omit_analysis:
+        #     self.wall_anchors = self.governing_backing.anchors_obj
+        #     sd['Wall Fastener Checks']['include'] = True
+        #
+        #
         # Bracket Connection Demands
         if model.elements.wall_bracket_connections and not model.analysis_vars.omit_analysis:
             sd['Bracket Connections']['include'] = True
@@ -894,6 +900,9 @@ class EquipmentReportSections(ReportSections):
         model = self.model_record.model
         sd = self.sections_dict
         run = self.model_record.analysis_runs[self.model_record.governing_run]
+
+        # Group Summary
+        sd['Group Summary']['args'] = (self.group_name, self.group_items, self.group_idx)
 
         # Base Concrete Anchors
         conc_sections_list = ['Anchor Spacing Limits',
@@ -923,29 +932,23 @@ class EquipmentReportSections(ReportSections):
             # base_connection_obj = max([plate.connection for plate in item.floor_plates if plate.connection is not None],
             #                           key=lambda x: x.anchors_obj.max_dcr())
             sd['Base Plate Connections']['args'] = (governing_cxn_idx,)
-            sd['Base Connection SMS Demand']['args'] = (cxn_obj, cxn_res, sms_result, 'base')
+            sd['Base Connection SMS Demand']['args'] = (cxn_obj, cxn_res, sms_obj, sms_result, 'base')
             sd['Base Connection SMS Checks']['args'] = (sms_obj, sms_result)
 
+        # Wall Anchor Demands
+        sd['Wall Fastener Demand']['args'] = (self.governing_backing,)
 
+        # Wall Concrete Anchors
+        wa_res, wa_idx = get_governing_result(run.results.wall_anchors)
+        wa_obj = model.elements.wall_anchors[wa_idx]
+        for limit_name in conc_sections_list:
+            sd['Wall ' + limit_name]['args'] = (wa_obj, wa_res)
 
-        # Wall Anchors
-        if bool(model.elements.wall_anchors):
-            wa_res, wa_idx = get_governing_result(run.results.wall_anchors)
-            wa_obj = model.elements.wall_anchors[wa_idx]
+        # Wall SMS Anchors
+        sd['Wall SMS Checks']['args'] = (self.wall_anchors,)
 
-            sd['Wall Fastener Demand']['args'] = (wa_idx,)
-            # Wall Concrete Anchors
-            if model.install.wall_material == m.WallMaterial.concrete:
-                for limit_name in conc_sections_list:
-                    sd['Wall ' + limit_name]['args'] = (wa_obj, wa_res)
-
-            # Wall SMS Anchors
-            if model.install.wall_material == m.WallMaterial.cfs:
-                sd['Wall SMS Checks']['args'] = (wa_obj, wa_res)
-
-            # Wall Wood Fasteners
-            if model.install.wall_material == m.WallMaterial.wood:
-                sd['Wall Fastener Checks']['args'] = (wa_obj, wa_res)
+        # Wall Wood Fasteners
+        sd['Wall Fastener Checks']['args'] = (self.wall_anchors,)
 
         # Bracket SMS Connection
         if sd['Bracket Connections']['include']:
@@ -957,7 +960,7 @@ class EquipmentReportSections(ReportSections):
             # base_connection_obj = max([plate.connection for plate in item.floor_plates if plate.connection is not None],
             #                           key=lambda x: x.anchors_obj.max_dcr())
 
-            sd['Bracket Connection SMS Demand']['args'] = (cxn_obj, cxn_res, sms_result, 'bracket')
+            sd['Bracket Connection SMS Demand']['args'] = (cxn_obj, cxn_res, sms_obj, sms_result, 'bracket')
             sd['Bracket Connection SMS Checks']['args'] = (sms_obj, sms_result)
 
         # Unity Description and Summary
@@ -968,33 +971,15 @@ def section_header(*args, **kwargs):
     pass
 
 
-def frontmatter(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-    insert_framed_pdf(sec, model_record.frontmatter_file, subsection_title='Narrative')
+def frontmatter(item, sec, sec_title, sub_title, plots_dict):
+    insert_framed_pdf(sec, item.frontmatter_file, subsection_title='Narrative')
 
 
-def endmatter(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-    insert_framed_pdf(sec, model_record.endmatter_file, subsection_title='Addendum')
+def endmatter(item, sec, sec_title, sub_title, plots_dict):
+    insert_framed_pdf(sec, item.endmatter_file, subsection_title='Addendum')
 
 
-def group_summary(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-
-    gr = model_record.group_record
-
+def group_summary(item, sec, sec_title, sub_title, plots_dict, group_name, group_items, governing_index):
     sec.append("This section is applicable to the equipment items tabulated below. Calculations are presented for "
                "the configuration which results in maximum anchor tension. Similar calculations were completed "
                r"for all units, but are omitted from this report for brevity.")
@@ -1002,35 +987,35 @@ def group_summary(
     sec.append(NewLine())
 
     # Group Summary Table
-    title = f'Group {gr.group_id} Summary'
+    title = f'Group {group_name} Summary'
     header = ['Equipment ID', 'Equipment Type',
               NoEscape('$B_x$'), NoEscape('$B_y$'), NoEscape('$H$'), NoEscape('$z_{CG}$'),
-              NoEscape('$W_p$'), NoEscape('$E_h$'), 'Unity']
-    units = ['', '', '(in)', '(in)', '(in)', '(in)', '(lbs)', '(lbs)', '']
+              NoEscape('$W_p$'), NoEscape('$E_h$'), NoEscape('$T_{max}$'), 'DCR']
+    units = ['', '', '(in)', '(in)', '(in)', '(in)', '(lbs)', '(lbs)', '(lbs)', '']
     utilization_column = [len(header)-1]
-    alignment = 'p{1.25in}p{1.25in}ccccccc'
-    # if model.install.installation_type in [InstallType.base]:
-    #     data = [[item.equipment_id, item.equipment_type,
-    #              item.Bx, item.By, item.H, item.zCG, item.Wp, item.Eh, item.base_anchors.Tu_max, item.base_anchors.DCR] for item in
-    #             group_items]
-    #
-    # elif model.install.installation_type in [InstallType.brace, InstallType.wall]:
-    #
-    #     anchor_tensions = [max([anchors.Tu_max for wall, anchors in item.wall_anchors.items() if anchors is not None]+
-    #                            [b.anchors_obj.Tu_max for b in item.wall_backing if b.anchors_obj is not None]) for item
-    #                        in group_items]
-    #     dcrs = [max([anchors.DCR for wall, anchors in item.wall_anchors.items() if anchors is not None]+
-    #                            [b.anchors_obj.DCR for b in item.wall_backing if b.anchors_obj is not None]) for item
-    #                        in group_items]
-    #     data = [[item.equipment_id, item.equipment_type,
-    #              item.Bx, item.By, item.H, item.zCG, item.Wp, item.Eh, tension, dcr] for item, tension, dcr in
-    #             zip(group_items, anchor_tensions, dcrs)]
-    # else:
-    #     raise Exception("Installation Type Not Supported")
+    alignment = 'p{1.25in}p{1.25in}cccccccc'
+    if item.installation_type in ['Base Anchored']:
+        data = [[item.equipment_id, item.equipment_type,
+                 item.Bx, item.By, item.H, item.zCG, item.Wp, item.Eh, item.base_anchors.Tu_max, item.base_anchors.DCR] for item in
+                group_items]
 
-    formats = ['{}', '{}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.2f}']
-    make_table(sec, title, header, units, gr.group_table_data, col_formats=formats,
-               rows_to_highlight=gr.governing_model_idx, utilization_cols=utilization_column, alignment=alignment,
+    elif item.installation_type in ['Wall Brackets', 'Wall Mounted']:
+
+        anchor_tensions = [max([anchors.Tu_max for wall, anchors in item.wall_anchors.items() if anchors is not None]+
+                               [b.anchors_obj.Tu_max for b in item.wall_backing if b.anchors_obj is not None]) for item
+                           in group_items]
+        dcrs = [max([anchors.DCR for wall, anchors in item.wall_anchors.items() if anchors is not None]+
+                               [b.anchors_obj.DCR for b in item.wall_backing if b.anchors_obj is not None]) for item
+                           in group_items]
+        data = [[item.equipment_id, item.equipment_type,
+                 item.Bx, item.By, item.H, item.zCG, item.Wp, item.Eh, tension, dcr] for item, tension, dcr in
+                zip(group_items, anchor_tensions, dcrs)]
+    else:
+        raise Exception("Installation Type Not Supported")
+
+    formats = ['{}', '{}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.0f}', '{:.2f}']
+    make_table(sec, title, header, units, data, col_formats=formats,
+               rows_to_highlight=governing_index, utilization_cols=utilization_column, alignment=alignment,
                use_minipage=False)
 
 
@@ -1077,37 +1062,33 @@ def description(
             fc_text = rf'$f^\prime_c = {ba.concrete_props.fc:.0f}$ psi'
             table.add_row(['Base Material', NoEscape(cracked_text + fc_text)])
             table.add_row(['Base Thickness', f'{ba.concrete_props.t_slab:.2f}'])
-            if model_record.include_pull_test and not model.analysis_vars.omit_analysis:
-                table.add_row(['Pull-test Load', f'{max([500, 3 * ba_res.forces[:,2,:].max()]):.0f} lbs'])
-            # todo: [BASE STRAPS]
+            # if model.include_pull_test and not model.omit_analysis:
+            #     model.update_element_resultants(model.governing_solutions['base_anchor_tension']['sol'])
+            #     table.add_row(['Pull-test Load', f'{max([500, 3 * model.base_anchors.Tu_max]):.0f} lbs'])
             # if model.base_straps:
             #     table.add_row(['Base Strap', model.base_strap])
             table.add_hline()
-        if model.elements.wall_anchors:
+        if model.elements.wall_brackets:
             wa_res, wa_idx = get_governing_result(run.results.wall_anchors)
             wa = model.elements.wall_anchors[wa_idx]
-
+            wa_calc = wa_res.tension_breakout_calcs[wa_res.governing_tension_group]
             table.add_row([NoEscape(r'\rowcolor{lightgray} Wall Fastener and Substrate'), ''])
             table.add_hline()
-
-
+            table.add_row(['Wall Type', rf'{model.install.wall_material}'])
             if not model_record.omit_bracket_output:
                 table.add_row(['Unit-to-Wall Hardware', run.hardware_selection.bracket_id])
-
-
+            anchor_idx, anchors = get_governing_result(run.results.wall_anchors)
             if model.install.wall_material==WallMaterial.concrete:
                 table.add_row(['Wall Fastener', NoEscape(rf'\textbf{{{run.hardware_selection.wall_anchor_id}}}')])
-                wa_calc = wa_res.tension_breakout_calcs[wa_res.governing_tension_group]
                 table.add_row([NoEscape('$h_{ef}$'), rf'{wa_calc.hef_default}'])
                 cracked_text = 'Cracked Concrete, ' if wa.concrete_props.cracked_concrete else 'Uncracked Concrete, '
                 fc_text = rf'$f^\prime_c = {wa.concrete_props.fc:.0f}$ psi'
                 table.add_row(['Wall Material', NoEscape(cracked_text + fc_text)])
                 table.add_row(['Wall Thickness', f'{wa.concrete_props.t_slab:.2f}'])
-
-            elif model.install.wall_material==WallMaterial.cfs.value:
-                table.add_row(['Wall Fastener', NoEscape(rf'\textbf{{{run.hardware_selection.wall_anchor_id}}} SMS')])
-                table.add_row(['Wall Material', f'Steel Studs, {wa.props.gauge:.0f} GA, {wa.props.fy:.0f} ksi'])
-            #todo: INCLUDE PULL TEST
+            #
+            # elif isinstance(anchor_obj, SMSAnchors):
+            #     table.add_row(['Wall Fastener', NoEscape(rf'\textbf{{{model.wall_sms_id}}}')])
+            #     table.add_row(['Wall Type', f'Steel Studs, {anchor_obj.gauge:.0f} GA, {anchor_obj.fy:.0f} ksi'])
             # if model.include_pull_test and not model.omit_analysis:
             #     wall_anchors = []
             #     model.update_element_resultants(model.governing_solutions['wall_anchor_tension']['sol'])
@@ -1115,7 +1096,7 @@ def description(
             #     table.add_row(['Pull-test Load', pull_test_text])
 
             table.add_hline()
-
+    # todo: add ASCE7 classification, once implemented in spreadsheet
 
     sec.append(NoEscape(r'\bigskip'))
     sec.append(NewLine())
@@ -1165,29 +1146,6 @@ def _results_summary(model_record, sec,inclusions_dict):
         sms_res, sms_idx = get_governing_result(results.base_plate_fasteners)
         sms_obj = model.elements.base_plate_fasteners[sms_idx]
         data.append(make_element_summary_row("Base Plate Connection", sms_obj, sms_res))
-    if inclusions_dict['Wall Brackets']:
-        br_res, br_idx = get_governing_result(results.wall_brackets)
-        br_obj = model.elements.wall_brackets[br_idx]
-        data.append(make_element_summary_row(f'{run.hardware_selection.bracket_id} [Wall Bracket Hardware]', br_obj,br_res))
-    if results.wall_anchors:
-        wa_res, wa_idx = get_governing_result(results.wall_anchors)
-        wa = model.elements.wall_anchors[wa_idx]
-        if isinstance(wa,conc.ConcreteAnchors):
-            element_label = "Wall Concrete Anchors"
-        elif inclusions_dict['Wall CMU Anchor Checks']:
-            raise NotImplementedError
-        elif isinstance(wa, sms.SMSAnchors):
-            element_label="Wall SMS Fasteners"
-        elif isinstance(wa, wf.WoodFastener):
-            element_label="Wall Fasteners"
-        else:
-            raise NotImplementedError("Provide Wall Fastener Type for summary table")
-        data.append(make_element_summary_row(element_label, wa, wa_res))
-
-    if inclusions_dict['Bracket Connection SMS Checks']:
-        sms_res, sms_idx = get_governing_result(results.wall_bracket_fasteners)
-        sms_obj = model.elements.wall_bracket_fasteners[sms_idx]
-        data.append(make_element_summary_row(f'Wall Hardware Connection to Equipment', sms_obj, sms_res))
 
     title = 'Summary of Element Checks'
     header = [NoEscape('Element'), NoEscape('Design Method'), NoEscape('Load Direction at Max Unity'), NoEscape('Max Unity'), NoEscape('OK?')]
@@ -1253,25 +1211,19 @@ def fp_asce7_16(item, sec, sec_title, sub_title, plots_dict):
             rf'''&E_v &&= 0.2S_{{DS}}W_p && = {item.Ev:.2f} \text{{ lb}} &\text{{Vertical Seismic Force}}\\''')
 
 
-def fp_asce7_22_opm(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-    model = model_record.model
-    calc = model.fp_calc
+def fp_asce7_22_opm(item, sec, sec_title, sub_title, plots_dict):  
     with sec.create(Flalign()) as align:
         align.append(
-            rf'''&C_{{pm}} && &&= {model.code_pars.Cpm:.2f} &\text{{\hfill Maximum Considered Horizontal Design Force Coefficient}}\\''')
+            rf'''&C_{{pm}} && &&= {item.code_pars["Cpm"]:.2f} &\text{{\hfill Maximum Considered Horizontal Design Force Coefficient}}\\''')
         align.append(
-            rf'''&C_{{v}} && &&= {model.code_pars.Cv:.2f} &\text{{\hfill Maximum Considered Vertical Design Force Coefficient}}\\''')
+            rf'''&C_{{v}} && &&= {item.code_pars["Cv"]:.2f} &\text{{\hfill Maximum Considered Vertical Design Force Coefficient}}\\''')
         align.append(
-            rf'''&E_h &&= F_p = C_{{pm}}W_p &&= {calc.Fp:.2f} \text{{ lb}} &\text{{\hfill Horizontal Seismic Force}}\\''')
+            rf'''&E_h &&= F_p = C_{{pm}}W_p &&= {item.Fp:.2f} \text{{ lb}} &\text{{\hfill Horizontal Seismic Force}}\\''')
+        if item.include_overstrength:
+            align.append(
+                rf'''&E_{{mh}} &&= \Omega F_p &&={item.Emh:.2f} \text{{ lb}} &\text{{Seismic Force with Overstrength}}\\''')
         align.append(
-            rf'''&E_{{mh}} &&= \Omega F_p &&={calc.Emh:.2f} \text{{ lb}} &\text{{Seismic Force with Overstrength}}\\''')
-        align.append(
-            rf'''&E_v &&= C_{{v}}W_p && = {calc.Ev:.2f} \text{{ lb}} &\text{{Vertical Seismic Force}}\\''')
+            rf'''&E_v &&= C_{{v}}W_p && = {item.Ev:.2f} \text{{ lb}} &\text{{Vertical Seismic Force}}\\''')
 
 def fp_cbc_1998(
         model_record: ModelRecord,
@@ -1279,6 +1231,7 @@ def fp_cbc_1998(
         sec_title: str,
         sub_title: str,
         plots_dict: dict):
+
     model = model_record.model
     calc = model.fp_calc
     with sec.create(Tabular('p{0.35\\textwidth} p{0.6\\textwidth}', pos='t')) as table:
@@ -1326,27 +1279,18 @@ def fp_cbc_1998(
     #         rf'''&E_v &&= F_p/(0.7\cdot 3) && = {item.Ev:.2f} \text{{ lb}} &\text{{LRFD Vertical Seismic Force}}\\''')
 
 
-def lrfd_loads_asce7_16(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-    model = model_record.model
-    calc = model.fp_calc
-    lrfd = model.factored_loads.lrfd
-    lrfd_omega = model.factored_loads.lrfd_omega
+def lrfd_loads_asce7_16(item, sec, sec_title, sub_title, plots_dict):
     with sec.create(Flalign()) as align:
-        align.append(NoEscape(
-            rf'''&F_{{uh}} &&=1.0E_h &&=1.0({calc.Eh:.2f}) &&= {lrfd.Fh:.2f} \text{{ lb}} &\text{{ASCE 7 \S2.3.6-6}}\\'''))
-        align.append(NoEscape(
-            rf'''&F_{{uh,\Omega}} &&=1.0E_{{mh}} &&=1.0({calc.Emh:.2f}) &&= {calc.Emh:.2f} \text{{ lb}} &\text{{ASCE 7 \S2.3.6-6}}\\'''))
-
-
-        align.append(NoEscape(rf'''&F_{{uv,min}} &&=-0.9W_p+1.0E_v &&=-0.9({model.equipment_props.Wp:.2f})+1.0({calc.Ev:.2f})
-        &&={lrfd.Fv_min:.2f} \text{{ lb}} & \text{{ASCE 7 \S2.3.6-6}}\\ '''))
-        align.append(NoEscape(rf'''&F_{{uv,max}} &&=-1.2W_p-1.0E_v &&=-1.2({model.equipment_props.Wp:.2f})-1.0({calc.Ev:.2f})
-                            &&={lrfd.Fv_max:.2f} \text{{ lb}} & \text{{ASCE 7 \S2.3.6-7}} '''))
+        if item.include_overstrength:
+            align.append(NoEscape(
+                rf'''&F_{{uh}} &&=1.0E_{{mh}} &&=1.0({item.Emh:.2f}) &&= {item.Emh:.2f} \text{{ lb}} &\text{{ASCE 7 \S2.3.6-6}}\\'''))
+        else:
+            align.append(NoEscape(
+                rf'''&F_{{uh}} &&=1.0E_h &&=1.0({item.Eh:.2f}) &&= {item.Fuh:.2f} \text{{ lb}} &\text{{ASCE 7 \S2.3.6-6}}\\'''))
+        align.append(NoEscape(rf'''&F_{{uv,min}} &&=-0.9W_p+1.0E_v &&=-0.9({item.Wp:.2f})+1.0({item.Ev:.2f})
+        &&={item.Fuv_min:.2f} \text{{ lb}} & \text{{ASCE 7 \S2.3.6-6}}\\ '''))
+        align.append(NoEscape(rf'''&F_{{uv,max}} &&=-1.2W_p-1.0E_v &&=-1.2({item.Wp:.2f})-1.0({item.Ev:.2f})
+                            &&={item.Fuv_max:.2f} \text{{ lb}} & \text{{ASCE 7 \S2.3.6-7}} '''))
 
     _analysis_description_text(sec)
     
@@ -1384,42 +1328,36 @@ def asd_loads_cbc_1998(
     model = model_record.model
     eprops = model.equipment_props
     fp_calc = model.fp_calc
-    fl_calc = model.factored_loads.asd
+    fl_calc = model.factored_loads.lrfd
 
     with sec.create(Flalign()) as align:
         align.append(
             rf'''&F_{{h}} &&=1.0E_h &&=1.0({fp_calc.Eh:.2f})) 
-               &&= {fl_calc.Fh:.2f} \text{{ lb}} &\text{{CBC98 \S1603A.6}}\\''')
-        align.append(rf'''&F_{{v,min}} &&=-0.9W_p+1.0E_v &&=-0.9({eprops.Wp:.2f})+1.0({fp_calc.Ev:.2f})
-           &&={fl_calc.Fv_min:.2f} \text{{ lb}} & \text{{CBC98 \S1603A.6}}\\ ''')
+               &&= {fl_calc.Fh:.2f} \text{{ lb}} &\text{{CBC98 (  )}}\\''')
+        align.append(rf'''&F_{{v,min}} &&=-0.9W_p+1.3(1.1E_v) &&=-0.9({eprops.Wp:.2f})+1.3(1.1)({fp_calc.Ev:.2f})
+           &&={fl_calc.Fv_min:.2f} \text{{ lb}} & \text{{CBC98 (  )}}\\ ''')
         align.append(
-            rf'''&F_{{uv,max}} &&=-1.0W_p-1.0E_v &&=-1.0({eprops.Wp:.2f})-1.0({fp_calc.Ev:.2f})
-                               &&={fl_calc.Fv_max:.2f} \text{{ lb}} & \text{{CBC98 \S1603A.6}} ''')
+            rf'''&F_{{uv,max}} &&=-0.75(1.4W_p+1.7(1.1E_v)) &&=-0.75(1.4{eprops.Wp:.2f})-1.7(1.1)({fp_calc.Ev:.2f})
+                               &&={fl_calc.Fv_max:.2f} \text{{ lb}} & \text{{CBC98 (  )}} ''')
 
 def _analysis_description_text(sec):
     sec.append(
         NoEscape(r'''The factored horizontal load, $F_{h}$ is applied at angles, $0 \leq \theta_z \leq 360$. 
                 An analytical model is used to determine distribution of applied loads to anchoring elements.'''))
 
-def asd_loads(model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict):
-    model = model_record.model
-    eprops = model.equipment_props
-    fp_calc = model.fp_calc
-    fl_calc = model.factored_loads.asd
-
-    #todo: rename for 7-16 and 7-22
+def asd_loads(item, sec, sec_title, sub_title, plots_dict):
+    #todo: rename and refactor for 7-16 and 7-22
     with sec.create(Flalign()) as align:
-
-        align.append(
-            rf'''&F_{{ah}} &&=0.7E_h &&=0.7({fp_calc.Eh:.2f}) &&= {fl_calc.Fh:.2f} \text{{ lb}} &\text{{ASCE7-16 2.4.5-8}}\\''')
-        align.append(rf'''&F_{{av,min}} &&=-0.6W_p+0.7E_v &&=-0.6({model.equipment_props.Wp:.2f})+0.7({fp_calc.Ev:.2f})
-        &&={fl_calc.Fv_min} \text{{ lb}} & \text{{ASCE7-16 2.4.5-10}} \\''')
-        align.append(rf'''&F_{{av,max}} &&=-1.0W_p-0.7E_v &&=-1.0({model.equipment_props.Wp:.2f})-0.7({fp_calc.Ev:.2f})
-                            &&={fl_calc.Fv_max:.2f} \text{{ lb}} & \text{{ASCE7-16 2.4.5-8}} ''')
+        if item.include_overstrength:
+            align.append(
+                rf'''&F_{{uh}} &&=0.7E_{{mh}} &&=0.7({item.Emh:.2f}) &&= {item.Emh:.2f} \text{{ lb}} &\text{{ASCE7-16 2.4.5-8}}\\''')
+        else:
+            align.append(
+                rf'''&F_{{ah}} &&=0.7E_h &&=0.7({item.Eh:.2f}) &&= {item.Fah:.2f} \text{{ lb}} &\text{{ASCE7-16 2.4.5-8}}\\''')
+        align.append(rf'''&F_{{av,min}} &&=-0.6W_p+0.7E_v &&=-0.6({item.Wp:.2f})+0.7({item.Ev:.2f})
+        &&={item.Fav_min} \text{{ lb}} & \text{{ASCE7-16 2.4.5-10}} \\''')
+        align.append(rf'''&F_{{av,max}} &&=-1.0W_p-0.7E_v &&=-1.0({item.Wp:.2f})-0.7({item.Ev}:.2f)
+                            &&={item.Fav_max:.2f} \text{{ lb}} & \text{{ASCE7-16 2.4.5-8}} ''')
 
     sec.append(
         NoEscape(r'''The factored horizontal load, $F_{ah}$ is applied at angles, $0 \leq \theta_z \leq 360$. 
@@ -1643,10 +1581,7 @@ def wall_brackets(model_record: ModelRecord, sec, sec_title, sub_title, plots_di
 
 def wall_bracket_demands(model_record: ModelRecord, sec, sec_title, sub_title, plots_dict):
     run = model_record.analysis_runs[model_record.governing_run]
-    brackets = model_record.model.elements.wall_brackets
-    bracket_results = run.results.wall_brackets
-    gov_bracket, idx = get_governing_result(bracket_results)
-    theta = gov_bracket.governing_theta_idx
+    brackets = run.results.wall_brackets
 
     # Bracket Forces Plots
     title = f'{run.hardware_selection.bracket_id} Forces vs. Direction of Loading'
@@ -1675,8 +1610,6 @@ def wall_bracket_demands(model_record: ModelRecord, sec, sec_title, sub_title, p
 
     fig_name = 'displaced_shape'
     width, file = plots_dict[make_figure_filename(sec_title, sub_title, fig_name)]
-
-
     with sec.create(MiniPage(width=f'{width}in',pos='t',align='r')) as mini:
         make_figure(mini, width, file)
 
@@ -1687,15 +1620,15 @@ def wall_bracket_demands(model_record: ModelRecord, sec, sec_title, sub_title, p
         header = [NoEscape('$x$'), NoEscape('$y$'), NoEscape('$z$'),
                   NoEscape('$N$'), NoEscape('$V$'), NoEscape('$Z$')]
         units = ['(in)', '(in)', '(in)', '(lbs)', '(lbs)', '(lbs)']
-        data = [[bracket.geo_props.xyz_equipment[0], bracket.geo_props.xyz_equipment[1],
-                 bracket.geo_props.xyz_equipment[2], res.fn[theta],
-                 res.fp[theta],
-                 res.fz[theta]] for bracket, res in zip(brackets,bracket_results)]
-
+        data = [[bracket.xyz_equipment[0], bracket.xyz_equipment[1],
+                 bracket.xyz_equipment[2], bracket.bracket_forces["fn"],
+                 bracket.bracket_forces['fp'],
+                 bracket.bracket_forces['fz']] for bracket in brackets]
+        highlight_idx = np.argmax([bracket.bracket_forces['fn'] for bracket in brackets])
         formats = ['{:.2f}', '{:.2f}', '{:.2f}', '{:.0f}', '{:.0f}', '{:.0f}']
         alignment = 'cccccc'
         make_table(mini, title, header, units, data, col_formats=formats, alignment=alignment, width=r'3.5in',
-                   rows_to_highlight=idx)
+                   rows_to_highlight=highlight_idx)
 
 
 def wall_bracket_checks(model_record: ModelRecord,
@@ -1719,7 +1652,7 @@ def wall_bracket_checks(model_record: ModelRecord,
         sec.append(
             "By inspection, bracket elements are determined not to be the governing component of the load path.")
         return
-    Tu = br_res.fn[br_res.governing_theta_idx]
+    Tu = bracket.fn.max()
     
     sec.append(NoEscape(rf"The maximum bracket tension force for any angle of loading is: $T_u = {Tu:.2f}$\\"))
     # with sec.create(Math(inline=False)) as m:
@@ -1790,7 +1723,7 @@ def wall_anchor_demands(model_record: ModelRecord,
 
     fig_name = 'backing'
     width, file = plots_dict[make_figure_filename(sec_title, sub_title, fig_name)]
-    make_figure(sec, width, file, title='Free-body Diagram of Backing Element(s)')
+    make_figure(sec, width, file, title='Free-body Diagram of Backing Element')
 
     sec.append(NoEscape(r'\hfill'))
 
@@ -1801,18 +1734,7 @@ def wall_anchor_demands(model_record: ModelRecord,
     # data = np.column_stack((governing_backing.anchor_forces[:, 0],
     #                         np.linalg.norm(governing_backing.anchor_forces[:, 1:], axis=1)))
 
-    if isinstance(wa_res,conc.ConcreteAnchorResults):
-        data = wa_res.forces[:,:,wa_res.governing_theta_idx]
-    elif isinstance(wa_res,sms.SMSResults):
-        data = np.column_stack([wa_res.tension_demand[:,wa_res.governing_theta_idx],
-                               wa_res.shear_x_demand[:,wa_res.governing_theta_idx],
-                               wa_res.shear_y_demand[:,wa_res.governing_theta_idx]])
-    elif isinstance(wa_res,wf.WoodFastenerResults):
-        data = np.column_stack([wa_res.N[:, wa_res.governing_theta_idx],
-                                wa_res.Vx[:, wa_res.governing_theta_idx],
-                                wa_res.Vy[:, wa_res.governing_theta_idx]])
-    else:
-        raise NotImplementedError("Table not implemented for wall anchor type")
+    data = wa_res.forces[:,:,wa_res.governing_theta_idx]
     make_table(sec, "Governing Wall Fastener Forces", header, units, data, alignment='ccc', col_formats=formats,
                width='3in')
 
@@ -1855,6 +1777,7 @@ def sms_connection_demands(
         plots_dict: dict,
         cxn_obj,
         cxn_res,
+        anchors_obj: sms.SMSAnchors,
         results: sms.SMSResults,
         connection_type):
 
@@ -2023,17 +1946,8 @@ def sms_checks(
         fl.append(
             rf'DCR_T &= DCR_T + DCR_V &&= {t_unity:.2f} + {v_unity:.2f} &&={results.unity:.2f} &{ok}\\')
 
-def wood_fastener_checks(
-        model_record: ModelRecord,
-        sec: Union[Section, Subsection, Subsubsection],
-        sec_title: str,
-        sub_title: str,
-        plots_dict: dict,
-        anchor_obj: wf.WoodFastener,
-        calc: wf.WoodFastenerResults):
-
+def wood_fastener_checks(item, sec, sec_title, sub_title, plots_dict, anchor_obj):
     a = anchor_obj
-
     sec.append(
         NoEscape(r'Wood fastener capacities are calculated below.'))
 
@@ -2046,22 +1960,26 @@ def wood_fastener_checks(
             table.add_hline()
             table.add_row([NoEscape(r'\rowcolor{lightgray} Properties'), ''])
             table.add_hline()
-            table.add_row(['Fastener ID', a.fastener_props.fastener_id])
-            table.add_row(['Fastener Type', a.fastener_props.fastener_type])
-            table.add_row(['Diameter', f'{a.fastener_props.D:.2f}'])
+            table.add_row(['Fastener ID', a.fastener_id])
+            table.add_row(['Fastener Type', a.fastener_type])
+            table.add_row(['Diameter', f'{a.D:.2f}'])
             table.add_hline()
         mini.append(NoEscape(r'\end{footnotesize}'))
 
+
+
     # Reference Withdrawal Values
+    # sec.append(NoEscape(r"\textit{Reference Withdrawal Design Values}"))
     sec.append(NoEscape(r'\smallskip'))
     sec.append(NewLine())
+    # subheader(sec, 'Reference Withdrawal Design Values')
     sec.append(NoEscape(r'\textit{\textbf{Reference Withdrawal Design Values}}'))
     sec.append(NewLine())
     math_lines = [[]]
-    if a.fastener_props.fastener_type == 'Lag Screw':
-        math_lines = [['W=1800G^{(3/2)}D^{(3/4)}',rf'={calc.W:.0f} \text{{ lbs}}', 'NDS \S12.2-1']]
-    if a.fastener_props.fastener_type == 'Wood Screw':
-        math_lines = [['W=2850G^{2}D',rf'={calc.W:.0f} \text{{ lb/in}}', 'NDS \S12.2-2']]
+    if a.fastener_type == 'Lag Screw':
+        math_lines = [['W=1800G^{(3/2)}D^{(3/4)}',rf'={a.W:.0f} \text{{ lbs}}', 'NDS \S12.2-1']]
+    if a.fastener_type == 'Wood Screw':
+        math_lines = [['W=2850G^{2}D',rf'={a.W:.0f} \text{{ lb/in}}', 'NDS \S12.2-2']]
     math_alignment_longtable(sec, math_lines, width='6.5in')
 
     # Reference Lateral Design Values
@@ -2071,24 +1989,22 @@ def wood_fastener_checks(
     sec.append(NoEscape(r'Lateral design values are based on the NDS and \textit{AWC Technical Report 12}. (See reference equations in TR12 Table 1-1.)\\'))
     sec.append(NoEscape(r'\bigskip'))
 
-    t = calc.governing_theta_idx
-    i = calc.governing_fastener_idx
+
     with sec.create(MiniPage(width='2in', pos='t', align='l')) as mini:
         mini.append(NoEscape(r'\begin{footnotesize}'))
         with mini.create(Tabular('ll')) as table:
             table.add_hline()
             table.add_row([NoEscape(r'\rowcolor{lightgray} Input Parameters'), ''])
             table.add_hline()
-            table.add_row([NoEscape(r'$L_m$ (in)'), f'{calc.p:.2f}'])
-            table.add_row([NoEscape(r'$L_s$ (in)'), f'{a.side_member_props.t_steel:.2f}'])
-            fem = calc.Fem if isinstance(calc.Fem,float) else calc.Fem[i,t]
-            table.add_row([NoEscape(r'$q_m = F_{em}D$ (lb/in)'), f'{fem*a.fastener_props.D:.0f}'])
-            table.add_row([NoEscape(r'$q_s = F_{es}D$ (lb/in)'), f'{a.side_member_props.Fes * a.fastener_props.D:.0f}'])
-            table.add_row([NoEscape(r'$M_m = M_s =  F_{yb}D^3/6$ (lb-in)'), f'{a.fastener_props.Fyb * (a.fastener_props.D**3/6):.0f}'])
-            table.add_row([NoEscape(r'$K_{\theta} = 1+0.25(\theta/90)$'), f'{calc.K_theta[i,t]:.2f}'])
-            if a.fastener_props.D<0.25:
-                table.add_row([NoEscape(r'$K_D$'), f'{calc.K_D:.2f}'])
-            table.add_row([NoEscape(r'Gap, $g$ (in)'),f'{a.side_member_props.g:.2f}'])
+            table.add_row([NoEscape(r'$L_m$ (in)'), f'{a.p:.2f}'])
+            table.add_row([NoEscape(r'$L_s$ (in)'), f'{a.t_steel:.2f}'])
+            table.add_row([NoEscape(r'$q_m = F_{em}D$ (lb/in)'), f'{a.Fem*a.D:.0f}'])
+            table.add_row([NoEscape(r'$q_s = F_{es}D$ (lb/in)'), f'{a.Fes * a.D:.0f}'])
+            table.add_row([NoEscape(r'$M_m = M_s =  F_{yb}D^3/6$ (lb-in)'), f'{a.Fyb * (a.D**3/6):.0f}'])
+            table.add_row([NoEscape(r'$K_{\theta} = 1+0.25(\theta/90)$'), f'{a.K_theta:.2f}'])
+            if a.D<0.25:
+                table.add_row([NoEscape(r'$K_D$'), f'{a.K_D:.2f}'])
+            table.add_row([NoEscape(r'Gap, $g$ (in)'),f'{a.g:.2f}'])
             table.add_hline()
 
         mini.append(NoEscape(r'\end{footnotesize}'))
@@ -2101,21 +2017,19 @@ def wood_fastener_checks(
             table.add_hline()
             table.add_row([NoEscape(r'\rowcolor{lightgray} Yield Mode'), NoEscape(r'Reduction Term, $R_d$'), 'NDS Table 12.3.1B'])
             table.add_hline()
-            if a.fastener_props.D<0.25:
+            if a.D<0.25:
                 table.add_row([NoEscape(r'I\textsubscript{m},I\textsubscript{s},II,III\textsubscript{m},III\textsubscript{s},IV'),
                                NoEscape(r'$K_D$'),
-                               f'{calc.Rd[0,i,t]:.2f}'])
+                               f'{a.Rd[0]:.2f}'])
             else:
                 table.add_row([NoEscape(r'I\textsubscript{m}'),
                                MultiRow(2, data=NoEscape(r'$4K_{\theta}$')),
-                               MultiRow(2, data=f'{calc.Rd[0,i,t]:.2f}')]),
+                               MultiRow(2, data=f'{a.Rd[0]:.2f}')]),
                 table.add_row([NoEscape(r'I\textsubscript{s}'),'', ''])
-                table.add_hline()
-                table.add_row([NoEscape(r'II'),NoEscape(r'$3.6K_{\theta}$'),f'{calc.Rd[2,i,t]:.2f}'])
-                table.add_hline()
+                table.add_row([NoEscape(r'II'),NoEscape(r'$3.6K_{\theta}$'),f'{a.Rd[2]:.2f}'])
                 table.add_row([NoEscape(r'III\textsubscript{m}'),
-                               MultiRow(3, data=NoEscape(r'$3.2K_{\theta}$')),
-                               MultiRow(3, data=f'{calc.Rd[3,i,t]:.2f}')])
+                               MultiRow(2, data=NoEscape(r'$3.2K_{\theta}$')),
+                               MultiRow(2, data=f'{a.Rd[3]:.2f}')])
                 table.add_row([NoEscape(r'III\textsubscript{s}'),'',''])
                 table.add_row([NoEscape(r'IV'),'',''])
             table.add_hline()
@@ -2133,35 +2047,34 @@ def wood_fastener_checks(
             table.add_hline()
             table.add_row([NoEscape(r'I\textsubscript{m}'),
                            NoEscape(r'$q_mL_m/R_d$'), '','','',
-                           f'{calc.yield_modes["Im"][i,t]:.0f}'])
+                           f'{a.yield_modes["Im"]:.0f}'])
             table.add_row([NoEscape(r'I\textsubscript{s}'),
                            NoEscape(r'$q_sL_s/R_d$'), '', '', '',
-                           f'{calc.yield_modes["Is"][i,t]:.0f}'])
-            table.add_hline()
+                           f'{a.yield_modes["Is"]:.0f}'])
             table.add_row([NoEscape(r'II'),
                            MultiRow(4, data=NoEscape(r'$\frac{-B+\sqrt{B^2-4AC}}{2AR_d}$')),
                            NoEscape(r'$A=\frac{1}{4q_s}+\frac{1}{4q_m}$'),
                            NoEscape(r'$B=\frac{L_s}{2}+g+\frac{L_m}{2}$'),
                            NoEscape(r'$C=-\frac{q_sL^2_s}{4}-\frac{q_mL_m^2}{4}$'),
-                           f'{calc.yield_modes["II"][i,t]:.0f}'])
+                           f'{a.yield_modes["II"]:.0f}'])
             table.add_row([NoEscape(r'III\textsubscript{m}'),
                            '',
                            NoEscape(r'$A=\frac{1}{2q_s}+\frac{1}{4q_m}$'),
                            NoEscape(r'$B=g+\frac{L_m}{2}$'),
                            NoEscape(r'$C=-M_s-\frac{q_mL_m^2}{4}$'),
-                           f'{calc.yield_modes["IIIm"][i,t]:.0f}'])
+                           f'{a.yield_modes["IIIm"]:.0f}'])
             table.add_row([NoEscape(r'III\textsubscript{s}'),
                            '',
                            NoEscape(r'$A=\frac{1}{4q_s}+\frac{1}{2q_m}$'),
                            NoEscape(r'$B=\frac{L_s}{2}+g$'),
                            NoEscape(r'$C=-\frac{q_sL^2_s}{4}-M_m$'),
-                           f'{calc.yield_modes["IIIs"][i,t]:.0f}'])
+                           f'{a.yield_modes["IIIs"]:.0f}'])
             table.add_row([NoEscape(r'IV'),
                            '',
                            NoEscape(r'$A=\frac{1}{2q_s}+\frac{1}{2q_m}$'),
                            NoEscape(r'$B=g$'),
                            NoEscape(r'$C=-M_s-M_m$'),
-                           f'{calc.yield_modes["IV"][i,t]:.0f}'])
+                           f'{a.yield_modes["IV"]:.0f}'])
             table.add_hline()
 
         mini.append(NoEscape(r'\end{footnotesize}'))
@@ -2170,53 +2083,31 @@ def wood_fastener_checks(
 
     # Adjustment Factors
     subheader(sec,"Adjustment Factors")
-    with sec.create(Tabular('lll')) as table:
-        table.add_hline()
-        table.add_row([NoEscape(r'\rowcolor{lightgray} Adjustment Factor'), 'Value', ''])
-        table.add_hline()
-        table.add_row([NoEscape(r'$C_M$'),f'{calc.C_M:.2f}',f'Moisture condition: {a.member_props.moisture}'])
-        table.add_row([NoEscape(r'$C_t$'),f'{calc.C_t:.2f}',NoEscape('Max temp assumed $\leq$ 100$^\circ$F')])
-        table.add_row([NoEscape(r'$C_{eg}$'), f'{calc.C_eg:.2f}', 'No end-grain attachment'])
-        table.add_row([NoEscape(r'$C_{di}$'), f'{calc.C_di:.2f}', 'Fasteners not part of diaphragm'])
-        table.add_row([NoEscape(r'$C_{tn}$'), f'{calc.C_tn:.2f}', 'Fasteners not toe-nailed'])
-        table.add_row([NoEscape(r'$C_g$'), f'{calc.C_g:.2f}', f'Group of ({calc.unities.shape[0]}) fastener(s)'])
-        table.add_row([NoEscape(r'$C_{\delta}$'), f'{calc.C_delta:.2f}', f'Min. edge distance provided'])
-        table.add_row([NoEscape(r'$K_f$'), f'{calc.Kf:.2f}', f'LRFD Conversion'])
-        table.add_row([NoEscape(r'$\phi$'), f'{calc.phi:.2f}',''])
-        table.add_hline()
+    sec.append(NoEscape(r"{\raggedright[COMMING SOON...]}"))
 
     # Adjusted Capacity Checks
-    sec.append(NoEscape(r'\bigskip'))
-
     subheader(sec, "Combined Capacity Check")
 
     sec.append(NewLine())
     sec.append(r"The tension and shear resulting in the largest combined loading DCR are given below:")
-    math_lines = [[f"N={calc.N[i,t]:.2f}",f"V_x={calc.Vx[i,t]:.2f}",f"V_y={calc.Vy[i,t]:.2f}",""]]
+    math_lines = [[f"N={a.N:.2f}",f"V_x={a.Vx:.2f}",f"V_y={a.Vy:.2f}",""]]
     math_alignment_longtable(sec,math_lines)
 
-
     sec.append(r"The adjusted capacities are:")
-    math_lines = [['W^\prime','=WC_MC_tC_{eg}K_f\phi',
-                   # f'=({calc.W:.2f})({calc.C_M:.2f})({calc.C_t:.2f})({calc.C_eg:.2f})({calc.Kf:.2f})({calc.phi:.2f})',
-                   f'={calc.W_prime:.2f}',''],
-                  ['Z^\prime','=ZC_MC_tC_gC_{\delta}C_{eg}C_{di}C_{tn}K_f\phi',
-                   # f'=({calc.Z[i,t]:.2f})({calc.C_M:.2f})({calc.C_t:.2f})({calc.C_g:.2f})({calc.C_delta:.2f})({calc.C_eg:.2f})({calc.C_di:.2f})({calc.C_tn:.2f})({calc.Kf:.2f})({calc.phi:.2f})',
-                   f'={calc.Z_prime[i,t]:.2f}','']
+    math_lines = [['W^\prime=WC_MC_tC_{eg}K_f\phi',
+                   f'=({a.W:.2f})({a.C_M:.2f})({a.C_t:.2f})({a.C_eg:.2f})({a.Kf:.2f})({a.phi:.2f})',
+                   f'={a.W_prime:.2f}'],
+                  ['Z^\prime=ZC_MC_tC_gC_{\delta}C_{eg}C_{di}C_{tn}K_f\phi',
+                   f'=({a.Z:.2f})({a.C_M:.2f})({a.C_t:.2f})({a.C_g:.2f})({a.C_delta:.2f})({a.C_eg:.2f})({a.C_di:.2f})({a.C_tn:.2f})({a.Kf:.2f})({a.phi:.2f})',
+                   f'={a.Z_prime:.2f}']
                   ]  #todo, add time_factor once you can see what the variable is called in NDS
     math_alignment_longtable(sec,math_lines)
 
-    ok = r'\textcolor{Green}{\textbf{\textsf{OK}}}' if calc.ok else r'\textcolor{red}{\textbf{\textsf{NG}}}'
-    sec.append(NoEscape(r"The combined loading utilization is:"))
-    math_lines = [[r'Z^\prime_\alpha',r'= \frac{W^\prime pZ^\prime}{W^\prime p\cos^2{\alpha}+Z^\prime \sin^2{\alpha}}',
-                   rf'={calc.z_alpha_prime[i,t]:.0f}',''],
-                  [r'\text{Unity}',r'=V/Z^\prime_\alpha',rf'={calc.unity:.2f}', ok]]
-    math_alignment_longtable(sec,math_lines)
-
-    # sec.append(NoEscape(r'\begin{math}'))
-    # sec.append(NoEscape(r'Z^\prime_\alpha = \frac{W^\prime pZ^\prime}{W^\prime p\cos^2{\alpha}+Z^\prime \sin^2{\alpha}}='+rf'{calc.z_alpha_prime[i,t]:.0f}\\'))
-    # sec.append(NoEscape(r'\text{DCR}=V/Z^\prime_\alpha =' +rf'{calc.V[i,t]:.0f}/{calc.z_alpha_prime[i,t]:.0f}={calc.unity:.2f}'))
-    # sec.append(NoEscape(r'\end{math}'))
+    sec.append(NoEscape(r"The combined loading utilization is:\\"))
+    sec.append(NoEscape(r'\begin{math}'))
+    sec.append(NoEscape(r'Z^\prime_\alpha = \frac{W^\prime pZ^\prime}{W^\prime p\cos^2{\alpha}+Z^\prime \sin^2{\alpha}}='+rf'{a.z_alpha_prime:.0f}\\'))
+    sec.append(NoEscape(r'\text{DCR}=V/Z^\prime_\alpha =' +rf'{a.V:.0f}/{a.z_alpha_prime:.0f}={a.DCR:.2f}'))
+    sec.append(NoEscape(r'\end{math}'))
 
 def concrete_summary_spacing_only(model_record: ModelRecord, sec, sec_title, sub_title, plots_dict,
                           anchor_obj: conc.ConcreteAnchors, results: conc.ConcreteAnchorResults):
@@ -2224,6 +2115,7 @@ def concrete_summary_spacing_only(model_record: ModelRecord, sec, sec_title, sub
         _concrete_input_parameters(mini,anchor_obj,results)
 
     _spacing_checks(model_record, sec, sec_title, sub_title, plots_dict, anchor_obj, results)
+
 
 def concrete_summary_full(model_record: ModelRecord, sec, sec_title, sub_title, plots_dict,
                           anchor_obj: conc.ConcreteAnchors, results: conc.ConcreteAnchorResults):
@@ -2258,7 +2150,7 @@ def concrete_summary_full(model_record: ModelRecord, sec, sec_title, sub_title, 
 
     sec.append(NoEscape(r'\hfill'))
     with sec.create(MiniPage(width=NoEscape(r"2.5in"), pos='t', align='c')) as mini:
-
+        mini.append('Table Here')
         # Anchors Table
         # header = [NoEscape(r'\#'),
         #     NoEscape(r'$x$'),

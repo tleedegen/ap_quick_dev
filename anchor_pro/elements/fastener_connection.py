@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
-from anchor_pro.ap_types import SupportingPlanes
+from anchor_pro.ap_types import WallPositions
 from anchor_pro.elements.elastic_bolt_group import ElasticBoltGroupProps, ElasticBoltGroupResults, calculate_bolt_group_forces
 from anchor_pro.ap_types import FactorMethod
 
@@ -50,10 +50,8 @@ class FastenerConnection:
         anchor_forces = calculate_bolt_group_forces(N=N, Vx=Vp, Vy=Vz, Mx=Mx, My=My, T=T,
                                                     n_anchors=bg.n_anchors,
                                                     inert_c=bg.inert_props_cent,
-                                                    inert_xp=bg.inert_props_xp,
-                                                    inert_xn=bg.inert_props_xn,
-                                                    inert_yp=bg.inert_props_yp,
-                                                    inert_yn=bg.inert_props_yn)
+                                                    inert_x=bg.inert_props_x,
+                                                    inert_y=bg.inert_props_y)
 
         return ElasticBoltGroupResults(
             centroid_forces_loc=centroid_forces_loc,

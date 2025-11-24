@@ -1,5 +1,5 @@
 import numpy as np
-from anchor_pro.ap_types import SupportingPlanes, FactorMethod
+from anchor_pro.ap_types import WallPositions, FactorMethod
 from anchor_pro.elements.wall_bracket import GeometryProps, BracketProps, WallBracketElement  # <-- update if needed
 
 
@@ -18,7 +18,7 @@ def build_bracket(Bx, By, H, dx, dy, dz):
         xyz_equipment=xyz_e,
         xyz_wall=xyz_w,
         normal_unit_vector=n_hat,
-        supporting_wall=SupportingPlanes.YP,   # not used by evaluation in this test
+        supporting_wall=WallPositions.YP,   # not used by evaluation in this test
         releases=(False, True, False, False, False, False)  # release compression in n only
         )
 

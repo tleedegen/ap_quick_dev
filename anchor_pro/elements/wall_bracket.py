@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
-from anchor_pro.ap_types import SupportingPlanes, FactorMethod
+from anchor_pro.ap_types import WallPositions, FactorMethod
 
 ReleaseFlags = Tuple[bool, bool, bool, bool, bool, bool]
 # Meaning: (pos_n, neg_n, pos_p, neg_p, pos_z, neg_z)
@@ -35,7 +35,7 @@ class GeometryProps:
     xyz_wall: NDArray  # shape (3,)
     xyz_backing: NDArray # (3,)
 
-    supporting_wall: SupportingPlanes
+    supporting_wall: WallPositions
     normal_unit_vector: NDArray  # shape (3,) unit vector (n̂) pointing equipment→wall or wall→equipment; be consistent.
 
     # Wall Properties
@@ -118,7 +118,7 @@ class WallBracketResults:
     tension_unity: Optional[np.ndarray] = None        # shape (n_theta,) based on fn in tension
     governing_capacity: Optional[float] = None  # scalar governing capacity used for checks
     unity: Optional[float] = None
-    ok: Optional[bool] = True
+
     governing_theta_idx: Optional[int] = None
 
     # Intermediates (optional but useful for debugging)
@@ -129,14 +129,11 @@ class WallBracketResults:
         if self.tension_unity is not None:
             unity = self.tension_unity.max()
             max_theta  = np.argmax(self.tension_unity)
-            ok = unity<=1.0
+            object.__setattr__(self, "unity", unity)
+            object.__setattr__(self, "governing_theta_idx", max_theta)
         else:
-            unity = 0
-            max_theta = np.argmax(self.fp)
-            ok = True
-        object.__setattr__(self, "unity", unity)
-        object.__setattr__(self, "governing_theta_idx", max_theta)
-        object.__setattr__(self, "ok", ok)
+            object.__setattr__(self, "unity", 0)
+            object.__setattr__(self, "governing_theta_idx", 0)
 
 
 class WallBracketElement:
@@ -149,7 +146,6 @@ class WallBracketElement:
 
     def set_bracket_props(self, bracket_props:BracketProps):
         self.bracket_props = bracket_props
-        self.factor_method = bracket_props.capacity_method  #todo: clean this up so there is one source of truth for this element's factor_method
 
     def get_element_stiffness_matrix(self, u=None):
         """ Returns a 6x6 stiffness matrix for the primary degrees of freedom without modifying self. """

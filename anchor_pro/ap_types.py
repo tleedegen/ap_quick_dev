@@ -38,20 +38,15 @@ class FactorMethod(str, Enum):
     lrfd_omega = 'LRFD_Omega'
 
 
-class SupportingPlanes(str, Enum):
+class WallPositions(str, Enum):
     XP = 'X+'
     XN = 'X-'
     YP = 'Y+'
     YN = 'Y-'
-    ZP = 'Z+'
-    ZN = 'Z-'
 
-class SupportingPlaneNormal(Enum):
+class WallNormalVecs(Enum):
     XP = (-1, 0, 0)
     XN = (1, 0, 0)
-    YN = (0, 1, 0)
-    YP = (0, -1, 0)
-    ZP = (0,0,-1)
-    ZN = (0,0,1)
-
+    YN = (0, -1, 0)
+    YP = (0, 1, 0)
 

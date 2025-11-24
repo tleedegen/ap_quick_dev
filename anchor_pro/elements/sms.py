@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 from anchor_pro.ap_types import FactorMethod
-from typing import Optional, Tuple, Literal
+from typing import Optional, Tuple
 from numpy.typing import NDArray
 import pandas as pd
 
@@ -45,7 +45,6 @@ class SMSCatalog:
                 f"Disallowed SMS combination: size={key[0]}, condition={key[1]}, fy={key[2]}, gauge={key[3]}"
             )
 
-SMS_SIZE = Literal['No. 6', 'No. 8', 'No. 10', 'No. 12', 'No. 14']
 
 class SMSCondition(str, Enum):
     """Conditions related to the SMS capacity Tables from OPD-001 ."""
@@ -53,6 +52,7 @@ class SMSCondition(str, Enum):
     GYP_1_LAYER    = "Condition 2"
     GYP_2_LAYERS   = "Condition 3"
     PRYING         = "Condition 4"
+
 
 @dataclass(frozen=True, slots=True)
 class SMSCaps:
@@ -79,9 +79,6 @@ def get_sms_caps(cat: SMSCatalog,screw_size, props: SMSProps) -> SMSCaps:
 
 @dataclass(frozen=True, slots=True)
 class SMSResults:
-    # Permissible Size based on Grade and Gauge
-    # grade_and_gauge_permissible: bool
-
     # Demands per theta & anchor
     tension_demand: NDArray[np.float32]   # [n_anchor, n_theta]
     shear_x_demand: NDArray[np.float32]   # [n_anchor, n_theta]
@@ -136,7 +133,7 @@ class SMSAnchors:
 
     def evaluate(self, forces: NDArray[np.float32]) -> SMSResults:
         """
-        forces: [n_anchor, 3, n_theta] as [T, Vx, Vy]
+        forces: [n_theta, n_anchor, 3] as [T, Vx, Vy]
         theta:  [n_theta]
         """
         # Verify Props have been set for object

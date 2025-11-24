@@ -1,5 +1,5 @@
 
-import anchor_pro.main_old
+import anchor_pro.main
 import anchor_pro.plots as plts
 import matplotlib
 import matplotlib.pyplot as plt
@@ -8,7 +8,7 @@ import numpy as np
 
 
 # Initialize controller
-controller = anchor_pro.main_old.main()
+controller = anchor_pro.main.main()
 item = controller.items_for_report['Base 02b']
 matplotlib.use('TkAgg')
 

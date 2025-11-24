@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from anchor_pattern_mixin import AnchorPatternMixin
+from anchor_pro.anchor_pattern_mixin import AnchorPatternMixin
 
 class ConcreteCMU(AnchorPatternMixin):
     # Adhesive Anchor Suffix Maps

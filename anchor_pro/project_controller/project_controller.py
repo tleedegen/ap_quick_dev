@@ -1,40 +1,48 @@
 import numpy as np
 
 import pandas as pd
-import time
 
-# from dataclasses import fields
 
-# from PyQt5.uic.properties import Properties
-# from scipy.stats import false_discovery_control
+from dataclasses import fields
 
+from PyQt5.uic.properties import Properties
+from scipy.stats import false_discovery_control
+
+from anchor_pro.model import ElementResults
 from anchor_pro.project_controller.excel_importer import ExcelTablesImporter
 from anchor_pro.reports.report import EquipmentReport
-
+from anchor_pro.ap_types import FactorMethod
 from anchor_pro.utilities import get_governing_result
 import multiprocessing as mp
 import itertools
+import copy
 
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
-from openpyxl.utils import get_column_letter #, column_index_from_string
+from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 import os
 
+
+import anchor_pro.model as m
 import anchor_pro.project_controller.factories as fact
 from anchor_pro.project_controller.project_classes import *
+import anchor_pro.elements.sms as sms
 
-from typing import Optional, Literal
-# from numpy.typing import NDArray
-import io, traceback, contextlib
 
+from typing import Optional, List, Tuple, Literal
+from numpy.typing import NDArray
 
 ''' Dataclasses'''
 Mode = Literal["Default", "Specified Product", "Product Group"]
 
 
+
 '''Classes'''
+
+
+
 class ProjectController:
     def __init__(self, excel_path, output_dir):
         # Inputs
@@ -42,16 +50,18 @@ class ProjectController:
         self.output_dir = output_dir
 
         # Input Data
-        self.excel_tables: Optional[ExcelTablesImporter] = None
+        self.excel_tables = None
         self.df_equipment = None  # Merge of equipment, base geometry, wall geometry, concrete tables
         self.get_model_inputs_from_excel_tables()
 
         # Models and Output
-        self.model_records: dict[ModelId, ModelRecord] = {}
+        # self.models: dict[str, m.EquipmentModel] = {}  # Dictionary of model objects (one for each row of the df_equipment)
+        # self.analysis_runs_by_model: dict[str, list[AnalysisRun]] = {}
+        # self.governing_analysis_run_by_model: dict[str, int] = {}  #{equipment id: index into analysis runs list}
+        # self.groups: dict[str, list[str]] = {}  # {group name: list of equipment_ids
+        # self.governing_model_by_group: dict[str, int] = {}  # {group name: index into list of equipment ids for}
 
-        # Multiprocessing pool
-        self.pool = mp.Pool(processes=mp.cpu_count()) if self.excel_tables.project_info[
-            'use_parallel_processing'] else None
+        self.models: dict[ModelId, ModelRecord] = {}
 
     def get_model_inputs_from_excel_tables(self):
         """Performs appropriate lookups across dataframes (equipment table, base geometry, etc.) and assembles
@@ -101,7 +111,7 @@ class ProjectController:
                                           how='left', suffixes=('_base', '_wall'))
 
         df_equipment['stud_or_blocking_key'] = (
-            df_equipment['blocking_id'].combine_first(df_equipment['stud_id']).astype(str)
+            df_equipment['blocking_id'].astype(str).fillna(df_equipment['stud_id'].astype(str))
         )
         df_equipment = df_equipment.merge(
             self.excel_tables.df_wood,
@@ -114,69 +124,150 @@ class ProjectController:
 
         self.df_equipment = df_equipment
 
-    def _model_tasks_generator(self):
-        """ Yields and iterable of module tasks without explicitly storing all elements"""
-        # Build small, pickle-friendly tasks
-        for _, equipment_row in self.df_equipment.iterrows():
-            row_dict = equipment_row.to_dict()
-            model_name = row_dict['equipment_id']
-            group_name = row_dict['group']
 
-            yield ModelTask(
-                model_name=model_name,
-                group_name=group_name,
-                equipment_row=row_dict,
-                project_info=self.excel_tables.project_info,  # only if needed inside worker
-                df_anchors=self.excel_tables.df_anchors,
-                df_brackets_catalog=self.excel_tables.df_brackets_catalog,
-                df_fasteners=self.excel_tables.df_fasteners,
-                df_product_groups=self.excel_tables.df_conc_product_groups,
-                bracket_group_list=self.excel_tables.bracket_group_list,
-                sms_catalog=self.excel_tables.sms_catalog,
-                df_wood_fasteners=self.excel_tables.df_wood_fasteners,
-                df_conc_product_groups=self.excel_tables.df_conc_product_groups,
-                auxiliary_folder=self.excel_tables.project_info['auxiliary_folder'],
-            )
-
-    def _model_results_generator(self):
-        """Serial or parallel map with the same interface."""
-        ''' A map applies a function to each element of an iterable'''
-        if self.pool is None:
-            # Serial: regular map yields in order
-            for x in map(create_model_and_analyze, self._model_tasks_generator()):
-                yield x
-        else:
-            # Parallel: stream results as they complete, order not guaranteed
-            '''Note: if you want ordered results in parallel (logs printed in the same order as rows), 
-            swap imap_unordered for imap. You’ll lose some responsiveness but keep deterministic ordering.'''
-            for x in self.pool.imap(create_model_and_analyze, self._model_tasks_generator(), chunksize=1):
-                yield x
 
     def run(self):
-        header = "parallel processing" if self.pool else "serial processing"
-        print("\n" + "=" * 60)
-        print(f"Beginning analysis ({header})")
-        print("=" * 60)
 
-        # IMPORTANT for Windows/PyInstaller: ensure this file is imported
-        # under an if __name__ == '__main__' guard in your top-level script, such as lines below
-        # if __name__ == "__main__":
-        #     mp.set_start_method("spawn", force=True)  # safest
-        #     controller.run()
+        # 1) Loop over equipment schedule
+        for eq_idx, equipment_row in self.df_equipment.iterrows():
+            # equipment_data = self.df_equipment.iloc[0]
 
-        for worker_result in self._model_results_generator():
-            # 1) Print the batched log for this model
-            print("\n" + "-" * 60)
-            print(f"Logs for model: {worker_result.model_name}")
-            print("-" * 60)
-            if worker_result.log_text:
-                print(worker_result.log_text.rstrip())
-            else:
-                print("(no output)")
+            # 2) Create model object
+            model_name = equipment_row['equipment_id']
+            group_name = equipment_row['group']
 
-            # 2) Store the record or None
-            self.model_records[worker_result.model_name] = worker_result.record
+            print(f'Creating Model: {model_name}')
+            model, omit_bracket_output =fact.model_factory(equipment_row, self.excel_tables)\
 
+            self.models[model_name] = ModelRecord(
+                model=model,
+                group = group_name,
+                omit_bracket_output=omit_bracket_output)
+
+
+            # 3) Loop over Hardware Selections
+            plan = get_hardware_selection_plan(self.excel_tables, equipment_row, model)
+
+            for base_anchor_id, bracket_id, wall_anchor_id, cxn_anchor_id in itertools.product(
+                    plan.base_anchor_list, plan.bracket_list, plan.wall_anchor_list, plan.cxn_anchor_list
+            ):
+                print(f'Analyzing {model_name} with '
+                      f'base anchor: {base_anchor_id}, '
+                      f'wall bracket: {bracket_id}, '
+                      f'wall anchor: {wall_anchor_id}, '
+                      f'hardware fastener: {cxn_anchor_id}')
+
+                selection = HardwareSelection(
+                    base_anchor_id= base_anchor_id,
+                    bracket_id=bracket_id,
+                    wall_anchor_id=wall_anchor_id,
+                    cxn_anchor_id=cxn_anchor_id)
+
+                # 4) Set Hardware Data
+                # 4a) Base Plate and Anchor Properties
+                base_anchor_props = []
+                base_plate_stiffness = []
+                if base_anchor_id and model.install.base_material == m.BaseMaterial.concrete:
+                    anchor_catalog = self.excel_tables.df_anchors
+                    base_anchor_data = anchor_catalog[anchor_catalog['anchor_id'] == base_anchor_id].iloc[0]
+                    for obj in model.elements.base_anchors:
+                        prop, bp_stiffness, position_ok = fact.mechanical_anchor_props_factory(base_anchor_data, obj, return_bp_stiffness=True)
+                        base_anchor_props.append(prop)
+                        base_plate_stiffness.append(bp_stiffness)
+                        # todo: figure out where ok goes (installation position)
+                if base_anchor_id and model.install.base_material == m.BaseMaterial.wood:
+                    #todo [Base Wood Anchors: hardware selection]
+                    raise NotImplementedError
+
+                # 4b) Wall Anchor Props and Bracket Props
+                wall_anchor_props = []
+                if wall_anchor_id and model.install.base_material == m.WallMaterial.concrete:
+                    anchor_catalog = self.excel_tables.df_anchors
+                    wall_anchor_data = anchor_catalog[anchor_catalog['anchor_id'] == wall_anchor_id].iloc[0]
+                    for obj in model.elements.wall_anchors:
+                        prop, position_ok = fact.mechanical_anchor_props_factory(wall_anchor_data, obj)
+                        wall_anchor_props.append(prop)
+                        # todo: figure out where ok goes (installation position)
+                if wall_anchor_id and model.install.base_material == m.WallMaterial.wood:
+                    # todo [Wall Wood Anchors: hardware selection]
+                    raise NotImplementedError
+                if wall_anchor_id and model.install.base_material == m.WallMaterial.cfs:
+                    # todo [Wall SMS Anchors: hardware selection]
+                    raise NotImplementedError
+
+                # Wall Bracket Properties
+                wall_bracket_props = []
+                if bracket_id:
+                    bracket_catalog = self.excel_tables.df_brackets_catalog
+                    bracket_data = bracket_catalog[bracket_catalog['bracket_id']==bracket_id].iloc[0]
+                    for bracket in model.elements.wall_brackets:
+                        prop = fact.wall_bracket_props_factory(bracket_id,bracket_data,bracket.geo_props.wall_flexibility)
+                        wall_bracket_props.append(prop)
+
+                # Set All Properties
+                model.set_model_data(
+                    base_anchor_props=base_anchor_props,
+                    base_plate_stiffness=base_plate_stiffness,
+                    wall_anchor_props=wall_anchor_props,
+                    wall_bracket_props=wall_bracket_props,
+                    cxn_sms_size=cxn_anchor_id,
+                    sms_catalog=self.excel_tables.sms_catalog)
+
+                # 5) Perform Pre-Analysis Checks
+                # todo: incorporate model_spacing check
+                model.check_model_stability()
+                if model.analysis_vars.omit_analysis:
+                    self.models[model_name].analysis_runs.append(
+                        AnalysisRun(
+                            equipment_id=model.equipment_info.equipment_id,
+                            hardware_selection=selection,
+                            omit_analysis=True))
+                    continue
+                # 6) Run Analysis
+                # Initialize solutions dicitionary
+                solutions = {}
+
+                # Extract previous cached solution (if applicable) as intial guess
+                ''' If previous analysis runs exists, extract the run whose hardware has the closets stiffness 
+                for use as the initial guess solution with the current hardware selection. 
+                Code prioritizes base anchor stiffness, then wall bracket stiffness for comparission.'''
+                if model.elements.base_anchors:
+                    K_current = model.elements.base_anchors[0].anchor_props.K
+                    stiffness_differences = [abs(run.results.base_anchors[0].K - K_current)
+                                             for run in self.models[model_name].analysis_runs]
+                elif model.elements.wall_brackets:
+                    K_current = model.elements.wall_brackets[0].bracket_props.kn
+                    stiffness_differences = [abs(run.results.wall_brackets[0].kn - K_current)
+                                             for run in self.models[model_name].analysis_runs]
+                else:
+                    raise NotImplementedError("No stiffness comparison provided for model without either base anchors or wall brackets")
+
+                for method in model.analysis_vars.factor_methods:
+                    Fh, Fv = model.factored_loads.get(method)
+                    previous_solutions = [run.solutions[method] for run in self.models[model_name].analysis_runs]
+
+                    if previous_solutions:
+                        idx_closest_K = min(range(len(stiffness_differences)), key=stiffness_differences.__getitem__)
+                        trial_solution = previous_solutions[idx_closest_K]
+                    else:
+                        trial_solution=None
+
+                    # Run analysis
+                    solutions[method] = (model.analyze(Fh, Fv, method, initial_solution_cache=trial_solution))
+
+                # 7) Evaluate Elements
+                element_results = model.evaluate(solutions)
+
+                self.models[model_name].analysis_runs.append(
+                    AnalysisRun(
+                        equipment_id=model.equipment_info.equipment_id,
+                        hardware_selection=selection,
+                        omit_analysis=False,
+                        results=element_results,
+                        solutions=solutions))
+
+            # 9) Identify Governing and Optimum Runs
+            self.models[model_name].governing_run = get_optimum_hardware(self.models[model_name])
 
 
     def results_to_dataframe(self) -> pd.DataFrame:
@@ -210,7 +301,7 @@ class ProjectController:
                 return np.nan
 
         rows = []
-        for id, mrec in self.model_records.items():
+        for id, mrec in self.models.items():
             for run_idx, run in enumerate(mrec.analysis_runs):
                 row = _empty_row()
 
@@ -480,25 +571,24 @@ class ProjectController:
     def create_report(self):
         """ Creates a pdf report of EquipmentModel instances included in self.items_for_report"""
 
+        # Set up parallel processing
+        self.pool = None #todo fix for parallel processing. Review old code
+
         # Post-process Governing by group, etc.
-        # Set Props for stand-alone sections
-        for m_id, mrec in self.model_records.items():
-            if mrec.model is None:
-                continue
-            if (mrec.group is None) or (self.excel_tables.project_info['report_by_group']=='All'):
+        for id, mrec in self.models.items():
+            # Set Props for stand-alone section
+            if mrec.group is None:
                 mrec.for_report = True
-                mrec.report_section_name = f'{m_id} [{mrec.model.equipment_info.equipment_type}]'
-                mrec.group_record = None
+                mrec.report_section_name = f'{id} [{mrec.model.equipment_info.equipment_type}]'
+            # Set Props for group section
+            else:
+                governing_group_items = get_governing_group_items(self.models)
+                for group_name, model_name in governing_group_items.items():
+                    self.models[model_name].for_report = True
+                    self.models[model_name].report_section_name = group_name
 
-        if self.excel_tables.project_info['report_by_group']=='Worst-Case':
-            group_records = get_group_records(self.model_records)
-            for group_record in group_records:
-                governing_model_id = group_record.governing_model_id
-                self.model_records[governing_model_id].for_report = True
-                self.model_records[governing_model_id].group_record = group_record
-                self.model_records[governing_model_id].report_section_name = group_record.group_id
 
-        EquipmentReport(self.excel_tables.project_info, self.model_records, pool=self.pool)
+        EquipmentReport(self.excel_tables.project_info, self.models, pool=self.pool)
 
 
 '''Global Variables'''
@@ -627,7 +717,7 @@ def get_hardware_selection_plan(
             group_name=base_anchor_group,
             member_type=model.elements.base_anchors[0].concrete_props.profile,              # "Slab" | "Filled Deck"
             df_anchors=excel_tables.df_anchors,
-            df_anchor_groups=excel_tables.df_conc_product_groups
+            df_anchor_groups=excel_tables.df_product_groups
         )
     else:
         base_anchor_list = [None]
@@ -645,7 +735,6 @@ def get_hardware_selection_plan(
         bracket_list = [None]
 
     # 3) Wall anchors (depends on wall type)
-    wall_anchor_list = [None]
     if has_wall_anchors:
         if model.install.wall_material in (m.WallMaterial.concrete, m.WallMaterial.cmu):
             wall_anchor_list = _resolve_concrete_anchor_list(
@@ -654,22 +743,25 @@ def get_hardware_selection_plan(
                 group_name=wall_anchor_group,
                 member_type=model.elements.wall_anchors[0].concrete_props.profile,  # "Slab" | "Filled Deck"
                 df_anchors=excel_tables.df_anchors,
-                df_anchor_groups=excel_tables.df_conc_product_groups
+                df_anchor_groups=excel_tables.df_product_groups
             )
-        elif model.install.wall_material == m.WallMaterial.cfs.value:
-            wall_anchor_list = _resolve_sms_list(
-                mode=wall_sms_mode,
-                specified_id=wall_sms_id)
-
-        elif model.install.wall_material == m.WallMaterial.wood.value:
-            wall_anchor_list = _resolve_wood_fastener_list(
-                mode=wall_wood_mode,
-                specified_id=wall_fastener_id,
-                product_group=wall_fastener_group,
-                df_fasteners=excel_tables.df_fasteners,
-            )
-        else:
-            raise NotImplementedError("Anchor List not defined for wall material")
+    #     elif ms.wall_type == "Metal Stud":
+    #         wall_anchor_list = _resolve_wall_sms_list(
+    #             mode=wall_sms_mode,
+    #             specified_id=wall_sms_id,
+    #             group_name=wall_sms_group,
+    #         )
+    #     elif ms.wall_type == "Wood Stud":
+    #         wall_anchor_list = _resolve_wall_wood_fastener_list(
+    #             mode=wall_wood_mode,
+    #             specified_id=wall_fastener_id,
+    #             group_name=wall_fastener_group,
+    #             df_wood_fasteners=df_wood_fasteners,
+    #         )
+    #     else:
+    #         wall_anchor_list = [None]
+    else:
+        wall_anchor_list = [None]
 
 
     # 4) Connection SMS list (for hardware connection node), if present
@@ -688,7 +780,7 @@ def get_hardware_selection_plan(
     )
 
 def _resolve_concrete_anchor_list(
-        mode: Mode,
+        mode: str,
         specified_id: Optional[str],
         group_name: Optional[str],
         member_type: str,
@@ -711,7 +803,7 @@ def _resolve_concrete_anchor_list(
     raise Exception('Must specify anchor product group or product id.')
 
 def _resolve_bracket_list(
-        mode: Mode,
+        mode: str,
         specified_id: Optional[str],
         group_name: Optional[str],
         df_wall_brackets: pd.DataFrame,
@@ -727,14 +819,13 @@ def _resolve_bracket_list(
             return filtered_bracket_df['bracket_id'].tolist()
     return [None]
 
-
-
 def _resolve_sms_list(
-        mode: Mode,
+        mode: str,
         specified_id: Optional[str]=None
     ):
 
     sms_list = ['No. 14', 'No. 12', 'No. 10', 'No. 8', 'No. 6']
+
 
     if mode == "Specified Product":
         if not specified_id in sms_list:
@@ -748,232 +839,6 @@ def _resolve_sms_list(
 
     return [specified_id]
 
-WoodProducts = Literal['Wood Screw', 'Lag Screw']
-
-def _resolve_wood_fastener_list(mode,
-                                specified_id: Optional[str],
-                                product_group: Optional[WoodProducts],
-                                df_fasteners: pd.DataFrame)->List:
-    if mode in ("Default", "Specified Product") and specified_id:
-        return [specified_id]
-    if mode in ("Default", "Product Group") and product_group:
-        product_col = df_fasteners.columns[0]
-        if product_group not in ('Wood Screw', 'Lag Screw'):
-            raise Exception('Wall fastener product group must be either "Wood Screw" or "Lag Screw"')
-        return product_col[df_fasteners['fastener_type']==product_group].to_list()
-    raise Exception('Must specify anchor product group or product id.')
-
-def create_model_and_analyze(task: ModelTask) -> WorkerResult:
-    # Import your project modules *inside* the worker to avoid global side-effects
-    # and to keep the top-level symbol picklable.
-
-    import itertools, os  # safe in worker
-    import anchor_pro.model as m
-    import anchor_pro.project_controller.factories as fact
-    from anchor_pro.project_controller.project_classes import (
-        ModelRecord, AnalysisRun, HardwareSelection)
-    local_start = time.time()
-    buf = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            print(f'Creating Model: {task.model_name}')
-
-            equipment_row = task.equipment_row
-            # 2) Create model object
-            model, omit_bracket_output = fact.model_factory(equipment_row, task)
-
-            frontmatter_file = os.path.join(task.auxiliary_folder, equipment_row['frontmatter_file']) \
-                if equipment_row.get('frontmatter_file') else None
-            endmatter_file = os.path.join(task.auxiliary_folder, equipment_row['endmatter_file']) \
-                if equipment_row.get('endmatter_file') else None
-
-            record = ModelRecord(
-                model=model,
-                group=task.group_name,
-                omit_bracket_output=omit_bracket_output,
-                frontmatter_file=str(frontmatter_file) if frontmatter_file else None,
-                endmatter_file=str(endmatter_file) if endmatter_file else None,
-                include_pull_test=equipment_row['include_pull_test']
-            )
-
-            # 3) Loop over Hardware Selections
-            plan = get_hardware_selection_plan(task, equipment_row, model)
-
-            for base_anchor_id, bracket_id, wall_anchor_id, cxn_anchor_id in itertools.product(
-                    plan.base_anchor_list, plan.bracket_list, plan.wall_anchor_list, plan.cxn_anchor_list
-            ):
-                print(f'Analyzing {task.model_name} with '
-                      f'base anchor: {base_anchor_id}, '
-                      f'wall bracket: {bracket_id}, '
-                      f'wall anchor: {wall_anchor_id}, '
-                      f'hardware fastener: {cxn_anchor_id}')
-
-                selection = HardwareSelection(
-                    base_anchor_id=base_anchor_id,
-                    bracket_id=bracket_id,
-                    wall_anchor_id=wall_anchor_id,
-                    cxn_anchor_id=cxn_anchor_id
-                )
-
-                # 4) Set Hardware Data
-                # 4a) Base Plate and Anchor Properties
-                base_anchor_props = []
-                base_plate_stiffness = []
-                if base_anchor_id and model.install.base_material == m.BaseMaterial.concrete:
-                    anchor_catalog = task.df_anchors
-                    base_anchor_data = anchor_catalog[anchor_catalog['anchor_id'] == base_anchor_id].iloc[0]
-                    for obj in model.elements.base_anchors:
-                        prop, bp_stiffness, position_ok = fact.mechanical_anchor_props_factory(
-                            base_anchor_data, obj, return_bp_stiffness=True
-                        )
-                        base_anchor_props.append(prop)
-                        base_plate_stiffness.append(bp_stiffness)
-                        # todo: figure out where ok goes (installation position)
-                if base_anchor_id and model.install.base_material == m.BaseMaterial.wood:
-                    # todo [Base Wood Anchors: hardware selection]
-                    raise NotImplementedError
-
-                # 4b) Wall Anchor Props and Bracket Props
-                wall_anchor_props = []
-                wall_bracket_props = []
-                if model.install.installation_type in (m.InstallType.wall, m.InstallType.brace):
-                    if not isinstance(wall_anchor_id, str):
-                        raise Exception("Must specify wall anchor product or product group.")
-
-                    if wall_anchor_id and model.install.wall_material == m.WallMaterial.concrete.value:
-                        anchor_catalog = task.df_anchors
-                        matches = anchor_catalog[anchor_catalog['anchor_id'] == wall_anchor_id]
-
-                        if matches.empty:
-                            raise KeyError(f"Anchor ID '{wall_anchor_id}' not found in concrete anchor catalog.")
-
-                        wall_anchor_data = matches.iloc[0]
-                        for obj in model.elements.wall_anchors:
-                            prop, position_ok = fact.mechanical_anchor_props_factory(wall_anchor_data, obj)
-                            wall_anchor_props.append(prop)
-                            # todo: figure out where ok goes (installation position)
-
-
-                    elif wall_anchor_id and model.install.wall_material == m.WallMaterial.wood.value:
-                        anchor_catalog = task.df_wood_fasteners
-                        matches = anchor_catalog[anchor_catalog['fastener_id'] == wall_anchor_id]
-
-                        if matches.empty:
-                            raise KeyError(f"Fastener ID '{wall_anchor_id}' not found in wood fastener catalog.")
-
-                        wall_anchor_data = matches.iloc[0]
-                        for obj in model.elements.wall_anchors:
-                            wood_fastener_props = fact.wood_fastener_props_factory(wall_anchor_data)
-                            wall_anchor_props.append(wood_fastener_props)
-
-                    elif wall_anchor_id and model.install.wall_material == m.WallMaterial.cfs.value:
-                        wall_anchor_props = wall_anchor_id
-                    else:
-                        raise NotImplementedError
-
-                    if bracket_id:
-                        bracket_catalog = task.df_brackets_catalog
-                        bracket_data = bracket_catalog[bracket_catalog['bracket_id'] == bracket_id].iloc[0]
-                        for bracket in model.elements.wall_brackets:
-                            prop = fact.wall_bracket_props_factory(
-                                bracket_id, bracket_data, bracket.geo_props.wall_flexibility
-                            )
-                            wall_bracket_props.append(prop)
-                    else:
-                        raise Exception("Must specify wall bracket hardware.")
-
-                # Set All Properties
-                model.set_model_data(
-                    base_anchor_props=base_anchor_props,
-                    base_plate_stiffness=base_plate_stiffness,
-                    wall_anchor_props=wall_anchor_props,
-                    wall_bracket_props=wall_bracket_props,
-                    cxn_sms_size=cxn_anchor_id,
-                    sms_catalog=task.sms_catalog
-                )
-
-                # 5) Pre-Analysis Checks
-                # todo: incorporate model_spacing check
-                model.check_model_stability()
-                if model.analysis_vars.omit_analysis:
-                    record.analysis_runs.append(
-                        AnalysisRun(
-                            equipment_id=model.equipment_info.equipment_id,
-                            hardware_selection=selection,
-                            omit_analysis=True
-                        )
-                    )
-                    continue
-
-                # 6) Run Analysis
-                solutions = {}
-
-                # Extract previous cached solution (if applicable) as initial guess
-                ''' If previous analysis runs exists, extract the run whose hardware has the closets stiffness 
-                for use as the initial guess solution with the current hardware selection. 
-                Code prioritizes base anchor stiffness, then wall bracket stiffness for comparission.'''
-                if model.elements.base_anchors:
-                    K_current = model.elements.base_anchors[0].anchor_props.K
-                    stiffness_differences = [abs(run.results.base_anchors[0].K - K_current)
-                                             for run in record.analysis_runs]
-                elif model.elements.wall_brackets:
-                    K_current = model.elements.wall_brackets[0].bracket_props.kn
-                    stiffness_differences = [abs(run.results.wall_brackets[0].kn - K_current)
-                                             for run in record.analysis_runs]
-                else:
-                    raise NotImplementedError(
-                        "No stiffness comparison provided for model without either base anchors or wall brackets"
-                    )
-
-                for method in model.analysis_vars.factor_methods:
-                    Fh, Fv = model.factored_loads.get(method)
-                    previous_solutions = [run.solutions[method] for run in record.analysis_runs]
-                    if previous_solutions:
-                        idx_closest_K = min(range(len(stiffness_differences)),
-                                            key=stiffness_differences.__getitem__)
-                        trial_solution = previous_solutions[idx_closest_K]
-                    else:
-                        trial_solution = None
-
-                    solutions[method] = model.analyze(Fh, Fv, method, initial_solution_cache=trial_solution)
-
-                # 7) Evaluate Elements
-                element_results = model.evaluate(solutions)
-
-                record.analysis_runs.append(
-                    AnalysisRun(
-                        equipment_id=model.equipment_info.equipment_id,
-                        hardware_selection=selection,
-                        omit_analysis=False,
-                        results=element_results,
-                        solutions=solutions
-                    )
-                )
-
-            # 9) Governing/Optimum per model
-            record.governing_run = get_optimum_hardware(record)
-            print(f'Model analysis time: {time.time()-local_start:.4f}')
-            return WorkerResult(
-                model_name=task.model_name,
-                record=record,
-                log_text=buf.getvalue(),
-                error_message=None
-            )
-
-    except Exception:
-        err = traceback.format_exc()
-        # Ensure traceback is included in the batched log, too
-        if buf.tell() == 0:
-            buf.write("\n")
-        buf.write("!!!EXCEPTION DURING MODEL ANALYSIS!!!\n")
-        buf.write(err + "\n")
-        return WorkerResult(
-            model_name=task.model_name,
-            record=ModelRecord(),
-            log_text=buf.getvalue(),
-            error_message=err
-        )
-
 def get_optimum_hardware(
         model_record:ModelRecord
     ):
@@ -983,10 +848,6 @@ def get_optimum_hardware(
         governing_run = _optimum_concrete_anchor(model_record,'base_anchors')
     elif model.elements.wall_anchors and model.install.wall_material==m.WallMaterial.concrete:
         governing_run = _optimum_concrete_anchor(model_record, 'wall_anchors')
-    elif model.elements.wall_anchors and model.install.wall_material == m.WallMaterial.cfs.value:
-        governing_run = _optimum_sms_anchor(model_record)
-    elif model.elements.wall_anchors and model.install.wall_material == m.WallMaterial.wood.value:
-        governing_run = _optimum_wood_fastener(model_record, 'wall_anchors')
     else:
         raise NotImplementedError("No method defined for 'optimum' hardware selection")
 
@@ -1001,35 +862,17 @@ def get_optimum_hardware(
 
 
 
-def get_group_records(model_records: dict):
+def get_governing_group_items(model_records: dict):
     # Collect list of group names
-    group_names = {mrec.group for name, mrec in model_records.items()} - {None}
+    group_names = set([mrec.group for name, mrec in model_records.items()])
 
     # Loop Over Groups and identify governing item
-    groups = []
-    for group_id in group_names:
-        group_governing_runs = [(model_id, mrec.analysis_runs[mrec.governing_run].results) for model_id, mrec in model_records.items() if mrec.group == group_id]
-        governing_model_id = max(group_governing_runs, key=lambda x: x[1].max_unity)[0]
-        governing_model_idx = [m_id for m_id, rec in group_governing_runs].index(governing_model_id)
-        governing_model_id = max(group_governing_runs, key=lambda x: x[1].max_unity)[0]
-        data = []
-        for model_id, run in group_governing_runs:
-            model = model_records[model_id].model
-            eprops = model.equipment_props
-            info = model.equipment_info
-            data.append([model_id,
-                    info.equipment_type,
-                    eprops.Bx, eprops.By, eprops.H, eprops.zCG, eprops.Wp, model.fp_calc.Fp,
-                   run.max_unity])
+    group_governing_item = {}
+    for group in group_names:
+        group_governing_runs = [(name, mrec.analysis_runs[mrec.governing_run].results) for name, mrec in model_records.items() if mrec.group == group]
+        group_governing_item[group] = max(group_governing_runs, key=lambda x: x[1].max_unity)[0]
 
-
-        groups.append(GroupRecord(
-            group_id=group_id,
-            governing_model_id=governing_model_id,
-            governing_model_idx=governing_model_idx,
-            group_table_data=data))
-
-    return groups
+    return group_governing_item
 
 def _optimum_concrete_anchor(model_record: ModelRecord, element_type: Literal['base_anchors','wall_anchors']):
     ranked_ok_runs = []  # Successful Runs
@@ -1057,68 +900,3 @@ def _optimum_concrete_anchor(model_record: ModelRecord, element_type: Literal['b
         governing_run = min(ranked_spacing_ng_runs, key=lambda idx_cost: idx_cost[1])[0]
 
     return governing_run
-
-def _optimum_sms_anchor(model_record: ModelRecord, element_type: Literal['wall_anchors']='wall_anchors'):
-    ranked_ok_runs = []  # Successful Runs
-    ranked_overstressed_runs = []  # Runs in which base anchors are overstressed
-    ranked_sms_ng_runs = []  # Runs in which sms size, grade, and thickness combo not permitted
-
-    cost_ranks = {'No. 6': 0,
-                  'No. 8': 1,
-                  'No. 10': 2,
-                  'No. 12': 3,
-                  'No. 14': 4}
-
-    run_indices = []
-    for idx_run, run in enumerate(model_record.analysis_runs):
-        res_obj, obj_idx = get_governing_result(getattr(run.results, element_type))
-        if element_type == 'wall_anchors':
-            sms_size = run.hardware_selection.wall_anchor_id
-        else:
-            raise NotImplementedError(f'Need to specify hardware selection for element type {element_type}')
-
-        # if not res_obj.grade_and_gague_permissible:
-        #     ranked_sms_ng_runs.append((idx_run, cost_ranks[sms_size]))
-        if res_obj.unity > 1.0:
-            ranked_overstressed_runs.append((idx_run, cost_ranks[sms_size]))
-        else:
-            ranked_ok_runs.append((idx_run, cost_ranks[sms_size]))
-
-    if ranked_ok_runs:
-        # Case 1, successful anchor, take governing as lowest-cost anchor
-        governing_run = min(ranked_ok_runs, key=lambda idx_cost: idx_cost[1])[0]
-    elif ranked_overstressed_runs:
-        #  Case 2, Anchors meet spacing requirements, but overstressed. Take governing as highest unity value.
-        governing_run = max(ranked_overstressed_runs, key=lambda idx_unity: idx_unity[1])[0]
-    else:
-        # Case 3: No anchors meet spacing requirements, take lowest-cost anchor
-        governing_run = min(ranked_sms_ng_runs, key=lambda idx_cost: idx_cost[1])[0]
-
-    return governing_run
-
-def _optimum_wood_fastener (model_record: ModelRecord, element_type: Literal['base_anchors', 'wall_anchors']):
-        ranked_ok_runs = []  # Successful Runs
-        ranked_overstressed_runs = []  # Runs in which base anchors are overstressed
-        # ranked_spacing_ng_runs = []  # Runs in which base anchor spacing is no good
-
-        run_indices = []
-        for idx_run, run in enumerate(model_record.analysis_runs):
-            res_obj, idx = get_governing_result(getattr(run.results, element_type))
-            # if not res_obj.spacing_requirements.ok:
-            #     ranked_spacing_ng_runs.append((idx_run, res_obj.cost_rank))
-            if not res_obj.ok:
-                ranked_overstressed_runs.append((idx_run, res_obj.unity))
-            else:
-                ranked_ok_runs.append((idx_run, res_obj.cost_rank))
-
-        if ranked_ok_runs:
-            # Case 1, successful anchor, take governing as lowest-cost anchor
-            governing_run = min(ranked_ok_runs, key=lambda idx_cost: idx_cost[1])[0]
-        else: # ranked_overstressed_runs:
-            #  Case 2, overstressed. Take governing as highest unity value.
-            governing_run = max(ranked_overstressed_runs, key=lambda idx_unity: idx_unity[1])[0]
-        # else:
-        #     # Case 3: No anchors meet spacing requirements, take lowest-cost anchor
-        #     governing_run = min(ranked_spacing_ng_runs, key=lambda idx_cost: idx_cost[1])[0]
-
-        return governing_run

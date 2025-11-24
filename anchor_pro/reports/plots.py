@@ -1,6 +1,6 @@
 import matplotlib
 
-from anchor_pro.ap_types import FactorMethod, SupportingPlanes
+from anchor_pro.ap_types import FactorMethod, WallPositions
 from anchor_pro.model import EquipmentModel
 
 # Force a non-interactive backend
@@ -30,8 +30,6 @@ import anchor_pro.elements.concrete_anchors as conc
 import anchor_pro.elements.base_plates as bp
 import anchor_pro.elements.sms as sms
 import anchor_pro.elements.fastener_connection as cxn
-import anchor_pro.elements.wall_backing as wbing
-import anchor_pro.elements.wall_bracket as wbkt
 from anchor_pro.project_controller.project_classes import ModelRecord
 from anchor_pro.utilities import get_governing_result
 from numpy.typing import NDArray
@@ -165,7 +163,7 @@ def equipment_3d_view_vtk(model_record: ModelRecord,_, filename=None):
 
     # Create Wall Objects
     if install.installation_type in ['Wall Brackets', 'Wall Mounted']:
-        wall_z_min = 0 if install.installation_type == 'Wall Brackets' else -model.equipment_props.H * 0.1
+        wall_z_min = 0 if install.installation_type == 'Wall Brackets' else -model.H * 0.1
         wall_z_max = 1.1 * model.equipment_props.H
         wall_xyz_min = {'X+': [wall_coordinate['X+'], wall_coordinate['Y-'] - wall_thickness, wall_z_min],
                         'X-': [wall_coordinate['X-'] - wall_thickness, wall_coordinate['Y-'] - wall_thickness,
@@ -178,9 +176,10 @@ def equipment_3d_view_vtk(model_record: ModelRecord,_, filename=None):
             'X-': [wall_coordinate['X-'], wall_coordinate['Y+'] + wall_thickness, wall_z_max],
             'Y+': [wall_coordinate['X+'] + wall_thickness, wall_coordinate['Y+'] + wall_thickness, wall_z_max],
             'Y-': [wall_coordinate['X+'] + wall_thickness, wall_coordinate['Y-'], wall_z_max]}
-        for backing in model.elements.wall_backing:
-            actor = _create_vtk_box(wall_xyz_min[backing.props.supporting_wall], wall_xyz_max[backing.props.supporting_wall], type='filled', opacity=0.35)
-            renderer.AddActor(actor)
+        for anchors in model.elements.wall_anchors:
+            if anchors:
+                actor = _create_vtk_box(wall_xyz_min[anchors.geo_props.supporting_wall], wall_xyz_max[anchors.geo_props.supporting_wall], type='filled', opacity=0.35)
+                renderer.AddActor(actor)
 
     # Create Equipment Bounding Box
     xyz_min = [-0.5 * Bx, -0.5 * By, 0]
@@ -281,45 +280,45 @@ def equipment_3d_view_vtk(model_record: ModelRecord,_, filename=None):
     #     renderer.AddActor(line_actor)
 
     # Create Bracket Elements
-    if not model_record.omit_bracket_output:
-        for bracket in model.elements.wall_brackets:
-            xyz_0 = np.array(bracket.geo_props.xyz_equipment)
-            xyz_f = np.array(bracket.geo_props.xyz_wall)
-            height = np.linalg.norm(xyz_0 - xyz_f)
-            if bracket.geo_props.supporting_wall in [wbkt.SupportingPlanes.XP, wbkt.SupportingPlanes.XN]:
-                rotate_z = 90
-            else:
-                rotate_z = 0
-            xyz = np.mean((xyz_0, xyz_f), axis=0)
-            cylinder_actor = _create_vtk_cylinder(xyz, height, radius=0.5, rotate_z=rotate_z, color=(0.5, 0.5, 0.5))
-            renderer.AddActor(cylinder_actor)
+    # if not equipment_obj.omit_bracket_output:
+    #     for bracket in equipment_obj.wall_brackets:
+    #         xyz_0 = np.array(bracket.xyz_equipment)
+    #         xyz_f = np.array(bracket.xyz_wall)
+    #         height = np.linalg.norm(xyz_0 - xyz_f)
+    #         if bracket.supporting_wall[0] == 'X':
+    #             rotate_z = 90
+    #         else:
+    #             rotate_z = 0
+    #         xyz = np.mean((xyz_0, xyz_f), axis=0)
+    #         cylinder_actor = _create_vtk_cylinder(xyz, height, radius=0.5, rotate_z=rotate_z, color=(0.5, 0.5, 0.5))
+    #         renderer.AddActor(cylinder_actor)
 
     # Create Backing Elements
-    n_coord = {k: -v for k, v in wall_coordinate.items()}
-
-    for backing in model.elements.wall_backing:
-        xyz_cent = backing.bolt_group_props.plate_centroid_XYZ
-        npz_cent = _xyz_to_npz(xyz_cent,backing.props.supporting_wall)
-        d = backing.props.d
-        npz_min = [0 + d, - backing.bolt_group_props.w / 2, - backing.bolt_group_props.h / 2] \
-            + npz_cent
-        npz_max = [0, backing.bolt_group_props.w / 2, backing.bolt_group_props.h / 2] \
-            + npz_cent
-        xyz_min = _npz_to_xyz(npz_min, backing.props.supporting_wall)
-        xyz_max = _npz_to_xyz(npz_max, backing.props.supporting_wall)
-        actor = _create_vtk_box(xyz_min, xyz_max, type="filled", facecolor=(0.75, 0.75, 0.75))
-        renderer.AddActor(actor)
-
-        for anchor in backing.bolt_group_props.xy_anchors:
-            l_anchor = d + 1.5
-            npz_anchor = [0 + d - 0.5, anchor[0], anchor[1]] + npz_cent
-            xyz_anchor = _npz_to_xyz(npz_anchor, backing.props.supporting_wall)
-            if backing.props.supporting_wall in [wbkt.SupportingPlanes.XP, wbkt.SupportingPlanes.XN]:
-                rotate_z = 90
-            else:
-                rotate_z = 0
-            actor = _create_vtk_cylinder(xyz_anchor, l_anchor, rotate_z=rotate_z, radius=0.25, color=(1, 0, 0))
-            renderer.AddActor(actor)
+    # n_coord = {k: -v for k, v in wall_coordinate.items()}
+    #
+    # for backing in equipment_obj.wall_backing:
+    #     xyz_cent = backing.centroid
+    #     npz_cent = _xyz_to_npz(xyz_cent,backing.supporting_wall)
+    #     d = backing.d
+    #     npz_min = [0 + d, backing.x_bar - backing.w / 2, backing.y_bar - backing.h / 2] \
+    #         + npz_cent
+    #     npz_max = [0, backing.x_bar + backing.w / 2, backing.y_bar + backing.h / 2] \
+    #         + npz_cent
+    #     xyz_min = _npz_to_xyz(npz_min, backing.supporting_wall)
+    #     xyz_max = _npz_to_xyz(npz_max, backing.supporting_wall)
+    #     actor = _create_vtk_box(xyz_min, xyz_max, type="filled", facecolor=(0.75, 0.75, 0.75))
+    #     renderer.AddActor(actor)
+    #
+    #     for anchor in backing.pz_anchors:
+    #         l_anchor = d + 1.5
+    #         npz_anchor = [0 + d - 0.5, anchor[0] + backing.x_bar, anchor[1] + backing.y_bar] + npz_cent
+    #         xyz_anchor = _npz_to_xyz(npz_anchor, backing.supporting_wall)
+    #         if backing.supporting_wall[0] == 'X':
+    #             rotate_z = 90
+    #         else:
+    #             rotate_z = 0
+    #         actor = _create_vtk_cylinder(xyz_anchor, l_anchor, rotate_z=rotate_z, radius=0.25, color=(1, 0, 0))
+    #         renderer.AddActor(actor)
 
     # Create axis arrows
     axes = vtk.vtkAxesActor()
@@ -554,7 +553,7 @@ def base_equilibrium(model_record: ModelRecord):
 
     theta_z = run.solutions[method].theta_z[theta_idx]
     cz_states = [res.compression_zones[theta_idx] for res in run.results.base_plates]
-    anchor_forces = [res.anchor_forces[:,:,theta_idx] for res in run.results.base_plates if not res.anchor_forces is None]
+    anchor_forces = [res.anchor_forces[:,:,theta_idx] for res in run.results.base_plates]
 
     return _equilibrium_plan_view(model, cz_states, anchor_forces, theta_z)
 
@@ -722,44 +721,25 @@ def base_displaced_shape(model_record: ModelRecord):
     sol = run.solutions[method].equilibrium_solutions[:,theta_idx]
     theta_z = run.solutions[method].theta_z[theta_idx]
     fh, fv = model.factored_loads.get(method)
-    return _displaced_shape(model, sol, theta_z, fh, fv,omit_brackets=model_record.omit_bracket_output)
+    return _displaced_shape(model, sol, theta_z, fh, fv)
 
 
-def bracket_displaced_shape(model_record: ModelRecord):
+def bracket_displaced_shape(equipment_obj):
     """ plots displaced shape for governing bracket solution """
-    model = model_record.model
-    run = model_record.analysis_runs[model_record.governing_run]
-    if run.results.wall_brackets[0].unity:
-        bracket, idx = get_governing_result(run.results.wall_brackets)
-    else:
-        bracket, idx = get_governing_result(run.results.wall_brackets, field_name='fp')
-
-    method = model.elements.wall_brackets[idx].factor_method
-    theta_idx = bracket.governing_theta_idx
-
-    sol = run.solutions[method].equilibrium_solutions[:, theta_idx]
-    theta_z = run.solutions[method].theta_z[theta_idx]
-    fh, fv = model.factored_loads.get(method)
-    return _displaced_shape(model, sol, theta_z, fh, fv, omit_brackets=model_record.omit_bracket_output)
+    return _displaced_shape(equipment_obj,
+                            equipment_obj.governing_solutions['wall_bracket_tension']['sol'],
+                            equipment_obj.governing_solutions['wall_bracket_tension']['theta_z'])
 
 
-def wall_displaced_shape(model_record:ModelRecord, _):
+def wall_displaced_shape(equipment_obj, _):
     """ plots displaced shape for governing wall anchor solution"""
-    model=model_record.model
-    run = model_record.analysis_runs[model_record.governing_run]
-    wa_res, wa_idx = get_governing_result(run.results.wall_anchors)
-    wa = model.elements.wall_anchors[wa_idx]
-    method = wa.factor_method
-    theta_idx = wa_res.governing_theta_idx
-    sol = run.solutions[method].equilibrium_solutions[:, theta_idx]
-    theta_z = run.solutions[method].theta_z[theta_idx]
-    fh, fv = model.factored_loads.get(method)
-
-    return _displaced_shape(model, sol, theta_z, fh, fv, omit_brackets=model_record.omit_bracket_output)
+    return _displaced_shape(equipment_obj,
+                            equipment_obj.governing_solutions['wall_anchor_tension']['sol'],
+                            equipment_obj.governing_solutions['wall_anchor_tension']['theta_z'])
 
 
 def _displaced_shape(model: EquipmentModel,
-                     sol, theta_z, fh, fv, sf=None, width=2.75,omit_brackets=False):
+                     sol, theta_z, fh, fv, sf=None, width=2.75):
 
     if not sf:
         sf = _get_scale_factor(model, sol)
@@ -862,55 +842,55 @@ def _displaced_shape(model: EquipmentModel,
     #             linestyle='-',
     #             markersize=2, markeredgewidth=0)
 
-    # Wall Brackets
-    wall_coordinate = _get_wall_coordinates(model)
-    if not omit_brackets:
-        for bracket in model.elements.wall_brackets:
-            xyz_0 = np.array(bracket.geo_props.xyz_equipment)
-            xyz_f = np.array(bracket.geo_props.xyz_wall)
-            ax.plot([xyz_0[0], xyz_f[0]], [xyz_0[1], xyz_f[1]], [xyz_0[2], xyz_f[2]], color=color_ud, marker='o',
-                    linestyle='-',
-                    markersize=4, markeredgewidth=0, linewidth=3)
-
-    # Wall Backing
-    n_coord = {k: -v for k, v in wall_coordinate.items()}
-
-    for backing in model.elements.wall_backing:
-        xyz_cent = backing.bolt_group_props.plate_centroid_XYZ
-        npz_cent = _xyz_to_npz(xyz_cent, backing.props.supporting_wall)
-        d = backing.props.d
-        npz_min = [0 + d, - backing.bolt_group_props.w / 2, - backing.bolt_group_props.h / 2] \
-                  + npz_cent
-        npz_max = [0, backing.bolt_group_props.w / 2, backing.bolt_group_props.h / 2] \
-                  + npz_cent
-
-        for anchor in backing.bolt_group_props.xy_anchors:
-            l_anchor = 3
-            npz_anchor_0 = [0 + d - 0.5, anchor[0], anchor[1]] + npz_cent
-            npz_anchor_f = [-l_anchor, anchor[0], anchor[1]] + npz_cent
-
-            xyz_anchor_0 = _npz_to_xyz(npz_anchor_0, backing.props.supporting_wall)
-            xyz_anchor_f = _npz_to_xyz(npz_anchor_f, backing.props.supporting_wall)
-
-            ax.plot([xyz_anchor_0[0], xyz_anchor_f[0]],
-                    [xyz_anchor_0[1], xyz_anchor_f[1]],
-                    [xyz_anchor_0[2], xyz_anchor_f[2]], color=color_ud, marker='o', linestyle='-',
-                    markersize=2, markeredgewidth=0)
-
-        xyz_min = _npz_to_xyz(npz_min, backing.props.supporting_wall)
-        xyz_max = _npz_to_xyz(npz_max, backing.props.supporting_wall)
-        xmin, ymin, zmin = xyz_min
-        xmax, ymax, zmax = xyz_max
-        vertices = np.array([[xmin, ymin, zmin],
-                             [xmax, ymin, zmin],
-                             [xmax, ymax, zmin],
-                             [xmin, ymax, zmin],
-                             [xmin, ymin, zmax],
-                             [xmax, ymin, zmax],
-                             [xmax, ymax, zmax],
-                             [xmin, ymax, zmax]])
-
-        _plot_wireframe_box(ax, vertices, color=color_ud, linewidth=lw_ud, linestyle=ls_ud)
+    # # Wall Brackets
+    # wall_coordinate = _get_wall_coordinates(model)
+    # if not model.omit_bracket_output:
+    #     for bracket in model.elements.wall_brackets:
+    #         xyz_0 = np.array(bracket.xyz_equipment)
+    #         xyz_f = np.array(bracket.xyz_wall)
+    #         ax.plot([xyz_0[0], xyz_f[0]], [xyz_0[1], xyz_f[1]], [xyz_0[2], xyz_f[2]], color=color_ud, marker='o',
+    #                 linestyle='-',
+    #                 markersize=4, markeredgewidth=0, linewidth=3)
+    #
+    # # Wall Backing
+    # n_coord = {k: -v for k, v in wall_coordinate.items()}
+    #
+    # for backing in model.wall_backing:
+    #     xyz_cent = backing.centroid
+    #     npz_cent = _xyz_to_npz(xyz_cent, backing.supporting_wall)
+    #     d = backing.d
+    #
+    #     for anchor in backing.pz_anchors:
+    #         l_anchor = 3
+    #         npz_anchor_0 = [0, anchor[0] + backing.x_bar, anchor[1] + backing.y_bar] + npz_cent
+    #
+    #         npz_anchor_f = [- l_anchor, anchor[0] + backing.x_bar, anchor[1] + backing.y_bar] + npz_cent
+    #
+    #         xyz_anchor_0 = _npz_to_xyz(npz_anchor_0, backing.supporting_wall)
+    #         xyz_anchor_f = _npz_to_xyz(npz_anchor_f, backing.supporting_wall)
+    #
+    #         ax.plot([xyz_anchor_0[0], xyz_anchor_f[0]],
+    #                 [xyz_anchor_0[1], xyz_anchor_f[1]],
+    #                 [xyz_anchor_0[2], xyz_anchor_f[2]], color=color_ud, marker='o', linestyle='-',
+    #                 markersize=2, markeredgewidth=0)
+    #
+    #     npz_min = [0 + d, backing.x_bar - backing.w / 2, backing.y_bar - backing.h / 2] \
+    #         + npz_cent
+    #     npz_max = [0, backing.x_bar + backing.w / 2, backing.y_bar + backing.h / 2] \
+    #         + npz_cent
+    #     xyz_min = _npz_to_xyz(npz_min, backing.supporting_wall)
+    #     xyz_max = _npz_to_xyz(npz_max, backing.supporting_wall)
+    #     xmin, ymin, zmin = xyz_min
+    #     xmax, ymax, zmax = xyz_max
+    #     vertices = np.array([[xmin, ymin, zmin],
+    #                          [xmax, ymin, zmin],
+    #                          [xmax, ymax, zmin],
+    #                          [xmin, ymax, zmin],
+    #                          [xmin, ymin, zmax],
+    #                          [xmax, ymin, zmax],
+    #                          [xmax, ymax, zmax],
+    #                          [xmin, ymax, zmax]])
+    #     _plot_wireframe_box(ax, vertices, color=color_ud, linewidth=lw_ud, linestyle=ls_ud)
 
     '''Plot the Displaced Shape'''
     # Bounding Box
@@ -1006,16 +986,16 @@ def _displaced_shape(model: EquipmentModel,
     #             linestyle='-',
     #             markersize=2, markeredgewidth=0)
     #
-    # Wall Bracket Elements
-    if not omit_brackets:
-        for bracket in model.elements.wall_brackets:
-            xyz_0 = np.array(bracket.geo_props.xyz_equipment)
-            xyz_f = np.array(bracket.geo_props.xyz_wall)
-            xyz_0 = xyz_0 + _get_coordinate_displacements([xyz_0], sol[0:6], sf=sf)
-            xyz_0 = xyz_0[0]
-            ax.plot([xyz_0[0], xyz_f[0]], [xyz_0[1], xyz_f[1]], [xyz_0[2], xyz_f[2]], color=color_disp, marker='o',
-                    linestyle='-',
-                    markersize=4, markeredgewidth=0, linewidth=3)
+    # # Wall Bracket Elements
+    # if not model.omit_bracket_output:
+    #     for bracket in model.wall_brackets:
+    #         xyz_0 = np.array(bracket.xyz_equipment)
+    #         xyz_f = np.array(bracket.xyz_wall)
+    #         xyz_0 = xyz_0 + _get_coordinate_displacements([xyz_0], sol[0:6], sf=sf)
+    #         xyz_0 = xyz_0[0]
+    #         ax.plot([xyz_0[0], xyz_f[0]], [xyz_0[1], xyz_f[1]], [xyz_0[2], xyz_f[2]], color=color_disp, marker='o',
+    #                 linestyle='-',
+    #                 markersize=4, markeredgewidth=0, linewidth=3)
 
     # Load Arrows
     loads = model.factored_loads.lrfd
@@ -1082,7 +1062,7 @@ def base_anchors_vs_theta(model_record: ModelRecord):
     matrix_t = ba_res.forces[:, 2, converged]
     matrix_v = (ba_res.forces[:, 0, converged] ** 2 +
                 ba_res.forces[:, 1, converged] ** 2) ** 0.5
-    matrix_unity = ba_res.unities[:,converged]
+    matrix_unity = ba_res.unity_by_anchor[:,converged]
     governing_theta_index = theta_z[ba_res.governing_theta_idx]
     fig, width = _forces_vs_theta(theta_z[converged],
                                   [matrix_t, matrix_v, matrix_unity],
@@ -1092,26 +1072,18 @@ def base_anchors_vs_theta(model_record: ModelRecord):
     return fig, width
 
 
-def bracket_vs_theta(model_record: ModelRecord):
-    model = model_record.model
-    run = model_record.analysis_runs[model_record.governing_run]
-
-    if run.results.wall_brackets[0].unity:
-        bracket, idx = get_governing_result(run.results.wall_brackets)
-    else:
-        bracket, idx = get_governing_result(run.results.wall_brackets, field_name='fp')
-
-    method = model.elements.wall_brackets[idx].factor_method
-    converged = run.solutions[method].converged
-    theta_z = run.solutions[method].theta_z
-
-    matrix_n = np.concatenate([br.fn[None,converged] for br in run.results.wall_brackets],axis=0)
-    matrix_p = np.concatenate([br.fp[None,converged] for br in run.results.wall_brackets],axis=0)
-    matrix_z = np.concatenate([br.fz[None,converged] for br in run.results.wall_brackets],axis=0)
-
-    fig, width = _forces_vs_theta(theta_z[converged],
+def bracket_vs_theta(equipment_obj):
+    matrix_n = equipment_obj.wall_bracket_forces[:, :, 0]
+    matrix_p = equipment_obj.wall_bracket_forces[:, :, 1]
+    matrix_z = equipment_obj.wall_bracket_forces[:, :, 2]
+    fig, width = _forces_vs_theta(equipment_obj.theta_z,
                                   [matrix_n, matrix_p, matrix_z],
-                                  [theta_z[bracket.governing_theta_idx]]*3,
+                                  [equipment_obj.governing_solutions['wall_bracket_tension'][
+                                       'theta_z'],
+                                   equipment_obj.governing_solutions['wall_bracket_shear'][
+                                       'theta_z'],
+                                   equipment_obj.governing_solutions['wall_bracket_shear'][
+                                       'theta_z']],
                                   [r'Normal, $N$ (lbs)', r'In-Plane Shear, $V_p$ (lbs)',
                                    r'Vert. Shear, $V_z$ (lbs)'],
                                   ['N', 'V_p', 'V_z'])
@@ -1119,38 +1091,25 @@ def bracket_vs_theta(model_record: ModelRecord):
     return fig, width
 
 
-def wall_anchors_vs_theta(model_record: ModelRecord, _):
-    model = model_record.model
-    run = model_record.analysis_runs[model_record.governing_run]
-    wa_res, wa_idx = get_governing_result(run.results.wall_anchors)
-    wa = model.elements.wall_anchors[wa_idx]
-    method = wa.factor_method
-    converged = run.solutions[method].converged
-    if model.install.wall_material==m.WallMaterial.concrete:
-        all_anchor_forces = np.concatenate([a.forces for a in run.results.wall_anchors], axis=0)
-        matrix_n = all_anchor_forces[:, 0, converged]
-        matrix_v = np.linalg.norm(all_anchor_forces[:, 1:3, converged], axis=1)
-    elif model.install.wall_material==m.WallMaterial.cfs:
-        matrix_n = np.concatenate([a.tension_demand[:,converged] for a in run.results.wall_anchors],axis=0)
-        matrix_p = np.concatenate([a.shear_x_demand[:,converged] for a in run.results.wall_anchors],axis=0)
-        matrix_z = np.concatenate([a.shear_y_demand[:,converged] for a in run.results.wall_anchors], axis=0)
-        matrix_v = np.linalg.norm([matrix_p,matrix_z],axis=1)
-    elif model.install.wall_material==m.WallMaterial.wood:
-        matrix_n = np.concatenate([a.N[:,converged] for a in run.results.wall_anchors], axis=0)
-        matrix_v = np.concatenate([a.V[:,converged] for a in run.results.wall_anchors], axis=0)
-    else:
-        raise NotImplementedError("Need method to extract anchor forces")
-    matrix_unity = np.concatenate([a.unities[:,converged] for a in run.results.wall_anchors],axis=0)
-    theta_idx = wa_res.governing_theta_idx
-    theta_z = run.solutions[wa.factor_method].theta_z
-    theta = theta_z[theta_idx]
+def wall_anchors_vs_theta(equipment_obj, _):
+    anchors = [anchors for wall, anchors in equipment_obj.wall_anchors.items()]
+    anchors += [backing.anchors_obj for backing in equipment_obj.wall_backing]
+    all_anchor_forces = np.concatenate([a.anchor_forces for a in anchors if a is not None], axis=0)
+    matrix_n = all_anchor_forces[:, :, 0]
+    matrix_p = all_anchor_forces[:, :, 1]
+    matrix_z = all_anchor_forces[:, :, 2]
 
-    fig, width = _forces_vs_theta(theta_z[converged],
-                                  [matrix_n, matrix_v, matrix_unity],
-                                  [theta]*3,
-                                  [r'Normal, $N$ (lbs)', r'Shear, $V$ (lbs)',
-                                   r'Unity'],
-                                  ['N', 'V', 'Unity'])
+    fig, width = _forces_vs_theta(equipment_obj.theta_z,
+                                  [matrix_n, matrix_p, matrix_z],
+                                  [equipment_obj.governing_solutions['wall_anchor_tension'][
+                                       'theta_z'],
+                                   equipment_obj.governing_solutions['wall_anchor_shear'][
+                                       'theta_z'],
+                                   equipment_obj.governing_solutions['wall_anchor_shear'][
+                                       'theta_z']],
+                                  [r'Normal, $N$ (lbs)', r'In-Plane Shear, $V_p$ (lbs)',
+                                   r'Vert. Shear, $V_z$ (lbs)'],
+                                  ['N', 'V_p', 'V_z'])
 
     return fig, width
 
@@ -1783,9 +1742,9 @@ def _anchor_diagram_vtk(anchors: conc.ConcreteAnchors,
 
         # Create vertices for the concrete slab box
         xmin = xy_group[:,0].min() - min(slab_extension, a.geo_props.cx_neg)
-        xmax = xy_group[:, 0].max() + min(slab_extension, a.geo_props.cx_pos)
+        xmax = xy_group[:, 0].max() + max(slab_extension, a.geo_props.cx_pos)
         ymin = xy_group[:, 1].min() - min(slab_extension, a.geo_props.cy_neg)
-        ymax = xy_group[:, 1].max() + min(slab_extension, a.geo_props.cy_pos)
+        ymax = xy_group[:, 1].max() + max(slab_extension, a.geo_props.cy_pos)
 
         zmax = 0
         zmin = -a.concrete_props.t_slab
@@ -1932,7 +1891,8 @@ def anchor_spacing_criteria(_, anchors_obj: conc.ConcreteAnchors, anchor_results
 def sms_hardware_attachment(
         _,
         cxn_obj:cxn.FastenerConnection,
-        cxn_res: cxn.ElasticBoltGroupResults,
+        cxn_res: cxn.ElasticBoltGroupResults ,
+        sms_obj:sms.SMSAnchors,
         sms_res: sms.SMSResults,
         __):
 
@@ -2093,18 +2053,14 @@ def sms_hardware_attachment(
     return fig, width
 
 
-def wall_backing(model_record: ModelRecord, wall_anchor_index: int):
+def wall_backing(_, backing_obj):
+    w = backing_obj.w
+    h = backing_obj.h
+    anchor_xy = backing_obj.pz_anchors
+    bracket_xy = backing_obj.xy_brackets # - [backing_obj.x_bar, backing_obj.y_bar]
+    bracket_forces = backing_obj.bracket_forces
+    anchor_forces = backing_obj.anchor_forces
 
-    # Unpack Objects
-    model = model_record.model
-    run = model_record.analysis_runs[model_record.governing_run]
-    wa = model.elements.wall_anchors[wall_anchor_index]
-    wa_res = run.results.wall_anchors[wall_anchor_index]
-    backing_indices = model.elements.anchors_to_backing[wall_anchor_index]
-    backing_objs = [model.elements.wall_backing[idx] for idx in backing_indices]
-    t = wa_res.governing_theta_idx
-
-    # Initialize Plot
     width = 3
     height = 2.25
     margin = 0
@@ -2115,39 +2071,10 @@ def wall_backing(model_record: ModelRecord, wall_anchor_index: int):
     ax = fig.add_subplot(121)
     ax.set_position(((1 - wratio), (1 - hratio), wratio, hratio))  # left, bottom, width, height
 
-    # Loop Through Backing and Add to Plot
-    bracket_forces_list = []
-    bracket_xy_list = []
-    anchor_xy_list = []
-    anchor_forces_list = []
-    for idx in backing_indices:
-
-        backing_obj = model.elements.wall_backing[idx]
-        back_res = run.results.wall_backing[idx]
-        bg = backing_obj.bolt_group_props
-        brkt_indices = model.elements.backing_to_brackets[idx]
-        cent_local = bg.global_to_local_transformation @ bg.plate_centroid_XYZ
-
-        anchor_xy_list.append(bg.xy_anchors+cent_local[0:2])
-        anchor_forces_list.append(back_res.anchor_forces_loc[:,:,t])
-
-        bracket_forces_list.extend([run.results.wall_brackets[br_idx].reactions_backing[0:3,t] for br_idx in brkt_indices])
-        bracket_xy_list.append(backing_obj.props.pz_brackets)
-
-        # Plot Wall Backing Outline
-        w = bg.w
-        h = bg.h
-
-        rectangle = patches.Rectangle((-w / 2+cent_local[0], -h / 2+cent_local[1]), w, h, linewidth=1, edgecolor='gray', facecolor='none',
-                                      alpha=0.5, zorder=1)
-        ax.add_patch(rectangle)
-
-    # Plot Wall Anchors
-
-    anchor_xy = np.concatenate(anchor_xy_list, axis=0)
-    anchor_forces = np.concatenate(anchor_forces_list, axis=0)
-    bracket_xy = np.concatenate(bracket_xy_list, axis=0)
-    bracket_forces = np.array(bracket_forces_list)
+    # Plot Wall Backing Outline
+    rectangle = patches.Rectangle((-w / 2, -h / 2), w, h, linewidth=1, edgecolor='gray', facecolor='none',
+                                  alpha=0.5, zorder=1)
+    ax.add_patch(rectangle)
 
     text_offset = 3
 
@@ -2172,7 +2099,7 @@ def wall_backing(model_record: ModelRecord, wall_anchor_index: int):
                 bbox=dict(facecolor='w', edgecolor='black', boxstyle='round,pad=0.1', linewidth=0.5), zorder=1)
 
     # Plot arrows for bracket and anchor forces
-    max_length = 0.25 * height  # Maximum arrow length for normalization
+    max_length = 0.25 * max(w, h)  # Maximum arrow length for normalization
     bracket_resultants = np.linalg.norm(bracket_forces[:, 1:], axis=1)
     anchor_resultants = np.linalg.norm(anchor_forces[:, 1:], axis=1)
     max_resultant = np.max(np.concatenate((bracket_resultants, anchor_resultants), axis=0), axis=0)
@@ -2206,9 +2133,9 @@ def wall_backing(model_record: ModelRecord, wall_anchor_index: int):
     else:
         ax.spines['left'].set_position(('data', 0))
         ax.spines['left'].set_zorder(0)
-    # datalim = max(np.ceil(1.1*w), np.ceil(1.1*h))
-    # ax.set_xlim(-datalim / 2, datalim / 2)
-    # ax.set_ylim(-datalim / 2, datalim / 2)
+    datalim = max(np.ceil(1.1*w), np.ceil(1.1*h))
+    ax.set_xlim(-datalim / 2, datalim / 2)
+    ax.set_ylim(-datalim / 2, datalim / 2)
     ax.set_aspect('equal')
     return fig, width
 
@@ -2432,7 +2359,7 @@ def _get_scale_factor(model: EquipmentModel, sol):
                 plate.dof_props.C @ sol,
                 sf=1)
              for plate in model.elements.base_plates
-             for boundary in plate.props.bearing_boundaries if len(boundary)>0]
+             for boundary in plate.props.bearing_boundaries]
 
     max_disp = max([np.max(np.abs(u)) for u in u_list])
     sf = 0 if np.isclose(max_disp, 0, 1e-10) else target_disp / max_disp
@@ -2451,7 +2378,7 @@ def _get_wall_coordinates(
     for supporting_wall in ['X+', 'X-', 'Y+', 'Y-']:
 
         # backing_d = [backing.d for backing in model.wall_backing if backing.supporting_wall == supporting_wall]
-        gap = getattr(model.wall_offsets, SupportingPlanes(supporting_wall).name, None)
+        gap = getattr(model.wall_offsets,WallPositions(supporting_wall).name,None)
         if gap:
             wall_coordinate[supporting_wall] = unit_edge[supporting_wall] + np.sign(unit_edge[supporting_wall]) * gap
         else:
