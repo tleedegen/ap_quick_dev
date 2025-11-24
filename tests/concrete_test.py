@@ -66,8 +66,10 @@ info = AnchorBasicInfo(
     installation_method=data['installation_method'],
     manufacturer=data['manufacturer'],
     product=data['product'],
+    product_type="",
     anchor_type=data['anchor_type'],
-    esr=data['esr']
+    esr=data['esr'],
+    cost_rank=data['cost_rank']
 )
 
 phi = Phi(
